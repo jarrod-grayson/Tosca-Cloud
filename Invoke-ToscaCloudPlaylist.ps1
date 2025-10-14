@@ -1,4 +1,4 @@
-﻿<# 
+<# 
 .SYNOPSIS
   Triggers a Tosca Cloud Playlist from PowerShell or Azure DevOps,
   polls its execution status, and saves JUnit results.
@@ -221,30 +221,27 @@ try {
     } while ($attempt -lt $maxRetries)
 
     if (-not [string]::IsNullOrWhiteSpace($junitXml)) {
-        # Pretty-print XML for readability and enforce UTF-8 with BOM for ADO compatibility
-        $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+        # Pretty-print XML for readability and ADO compatibility
+		if ($response -is [xml]) {
+			$stringWriter = New-Object System.IO.StringWriter
+			$xmlWriter = New-Object System.Xml.XmlTextWriter($stringWriter)
+			$xmlWriter.Formatting = "Indented"
+			$response.Save($xmlWriter)
+			$formattedXml = $stringWriter.ToString()
+			$formattedXml | Out-File -FilePath $resultsFilePath -Encoding UTF8
+		}
+		else {
+			$junitXml | Out-File -FilePath $resultsFilePath -Encoding UTF8
+		}
 
-        if ($response -is [xml]) {
-            $stringWriter = New-Object System.IO.StringWriter
-            $xmlWriter = New-Object System.Xml.XmlTextWriter($stringWriter)
-            $xmlWriter.Formatting = "Indented"
-            $response.Save($xmlWriter)
-            $formattedXml = $stringWriter.ToString()
-        }
-        else {
-            $formattedXml = $junitXml
-        }
-
-        # Replace encoding declaration if needed
-        $formattedXml = $formattedXml -replace 'encoding="utf-16"', 'encoding="utf-8"'
-
-        # Write file explicitly as UTF-8 with BOM
-        [System.IO.File]::WriteAllText($resultsFilePath, $formattedXml, $utf8Bom)
-
-        Write-Info "📄 JUnit results saved to: $resultsFilePath (UTF-8 BOM)"
+        Write-Info "📄 JUnit results saved to: $resultsFilePath"
+    }
+    else {
+        Write-ErrorLine "❌ No JUnit content returned after waiting $($maxRetries * $retryDelay) seconds."
+    }
 }
-else {
-    Write-ErrorLine "❌ No JUnit content returned after waiting $($maxRetries * $retryDelay) seconds."
+catch {
+    Write-ErrorLine "⚠️ Could not download JUnit results: $($_.Exception.Message)"
 }
 
 # ---------- 5) Exit code based on final state ----------
@@ -263,7 +260,4 @@ elseif ($finalState -eq "canceled") {
 else {
     Write-ErrorLine "⚠️ Execution ended with state '$finalState'"
     exit 1
-
 }
-
-
