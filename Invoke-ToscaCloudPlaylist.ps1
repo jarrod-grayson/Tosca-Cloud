@@ -14,6 +14,8 @@
     -ParameterOverridesJson '[{"name":"Browser","value":"Chrome"}]'
 #>
 
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$TokenUrl,
@@ -259,6 +261,6 @@ elseif ($finalState -eq "canceled") {
     exit 1
 }
 else {
-    Write-ErrorLine "Execution ended with state '$finalState'"
+    Write-ErrorLine ("Execution ended with state '{0}'" -f $finalState)
     exit 1
 }
