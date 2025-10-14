@@ -21,10 +21,10 @@ param(
     [Parameter(Mandatory=$true)] [string]$ClientSecret,
     [Parameter(Mandatory=$true)] [string]$Scope,
     [Parameter(Mandatory=$true)] [string]$TenantBaseUrl,
-    
+
     [Parameter(Mandatory=$false)] [string]$PlaylistId,
     [Parameter(Mandatory=$false)] [string]$PlaylistConfigFilePath,
-    
+
     [Parameter(Mandatory=$false)] [int]$PollSeconds = 10,
     [Parameter(Mandatory=$false)] [int]$TimeoutMinutes = 60,
 	[Parameter(Mandatory=$false)] [string]$ResultsFileName,
@@ -210,7 +210,7 @@ try {
                 break
             }
             else {
-                Write-Info "⚠️ Results not ready yet (no '<testcase>' found). Waiting $retryDelay seconds..."
+                Write-Info "⚠️ Results not ready yet (no <testcase> found). Waiting $retryDelay seconds..."
                 Start-Sleep -Seconds $retryDelay
             }
         }
@@ -260,4 +260,5 @@ elseif ($finalState -eq "canceled") {
 else {
     Write-ErrorLine "⚠️ Execution ended with state '$finalState'"
     exit 1
+
 }
