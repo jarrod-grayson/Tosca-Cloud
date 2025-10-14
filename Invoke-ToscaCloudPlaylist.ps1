@@ -28,7 +28,7 @@ param(
     [Parameter(Mandatory=$false)] [int]$PollSeconds = 10,
     [Parameter(Mandatory=$false)] [int]$TimeoutMinutes = 60,
 	[Parameter(Mandatory=$false)] [string]$ResultsFileName,
-	[Parameter(Mandatory=$false)] [string]$ResultsFolderPath"
+	[Parameter(Mandatory=$false)] [string]$ResultsFolderPath
 
 )
 
@@ -262,3 +262,4 @@ else {
     exit 1
 
 }
+
