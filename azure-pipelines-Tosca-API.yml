@@ -74,18 +74,17 @@ stages:
 
       - task: PowerShell@2
         inputs:
-          filePath: $(System.DefaultWorkingDirectory)\tosca_execution_client.ps1
+          filePath: $(System.DefaultWorkingDirectory)\Invoke-ToscaCloudPlaylist.ps1
           arguments: >
-            -toscaServerUrl "http://localhost:80"
-            -projectName "common_repository"
-            -eventsConfigFilePath "testEvents.json"
-            -clientId "pLCD-s_I7UWieIPIHcAHVA"
-            -clientSecret "nvummXXOH0StbMwdHJBAyA0_Bfyb6z7Eqi6mO9hJpfwg"
-            -creator "ToscaExecutionClient ADO Pipeline"
-            -resultsFileName "results.xml"
-            -resultsFolderPath "C:/temp/results"
-            -debug "true"
-        displayName: 'Execute Tosca TestEvent(s) via ToscaExecutionClient and Upload Results to qTest'
+            -TokenUrl "$(ToscaAuthURL)"
+            -ClientId "$(ToscaClientId)"
+            -ClientSecret "$(ToscaClientSecret)"
+            -Scope "tta"
+            -TenantBaseUrl "https://$(ToscaTenant).my.tricentis.com/$(ToscaWorkspaceID)"
+            -PlaylistConfigFilePath "PlaylistConfig.json"
+            -ResultsFileName "results.xml"
+            -ResultsFolderPath "C:\Tricentis\Tosca\Results"
+        displayName: 'Execute Tosca Cloud Playlist and Upload Results'
   
       - task: PowerShell@2
         inputs:
