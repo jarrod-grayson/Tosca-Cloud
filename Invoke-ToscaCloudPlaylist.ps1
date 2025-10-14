@@ -27,8 +27,8 @@ param(
     
     [Parameter(Mandatory=$false)] [int]$PollSeconds = 10,
     [Parameter(Mandatory=$false)] [int]$TimeoutMinutes = 60,
-	[Parameter(Mandatory=$false)] [string]$ResultsFileName = "results.xml",
-	[Parameter(Mandatory=$false)] [string]$ResultsFolderPath = "C:\Tricentis\Tosca\Results"
+	[Parameter(Mandatory=$false)] [string]$ResultsFileName,
+	[Parameter(Mandatory=$false)] [string]$ResultsFolderPath"
 
 )
 
@@ -260,4 +260,5 @@ elseif ($finalState -eq "canceled") {
 else {
     Write-ErrorLine "⚠️ Execution ended with state '$finalState'"
     exit 1
+
 }
