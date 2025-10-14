@@ -210,7 +210,7 @@ try {
                 break
             }
             else {
-                Write-Info "⚠️ Results not ready yet (no <testcase> found). Waiting $retryDelay seconds..."
+                Write-Info "⚠️ Results not ready yet (no '<testcase>' found). Waiting $retryDelay seconds..."
                 Start-Sleep -Seconds $retryDelay
             }
         }
@@ -260,5 +260,4 @@ elseif ($finalState -eq "canceled") {
 else {
     Write-ErrorLine "⚠️ Execution ended with state '$finalState'"
     exit 1
-
 }
