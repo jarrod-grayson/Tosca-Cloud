@@ -95,10 +95,11 @@ This repository includes example PowerShell scripts (such as `Invoke-ToscaCloudP
     filePath: 'C:\Tricentis\Tosca\Invoke-ToscaCloudPlaylist.ps1'
     arguments: >
       -TokenUrl "https://yourtenant.okta.com/oauth2/default/v1/token"
-      -ClientId "Your_Client_ID"
-      -ClientSecret "$(ClientSecret)"
+      -ClientId "<Your_Client_ID>"
+      -ClientSecret "<Your_Client_Secret>"
       -Scope "tta"
       -TenantBaseUrl "https://yourtenant.my.tricentis.com/your_space_id"
       -PlaylistId "your-playlist-guid"
       -ResultsFileName "results.xml"
       -ResultsFolderPath "$(Build.ArtifactStagingDirectory)\Results"
+
