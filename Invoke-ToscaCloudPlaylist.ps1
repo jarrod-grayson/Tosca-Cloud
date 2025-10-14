@@ -260,4 +260,5 @@ elseif ($finalState -eq "canceled") {
 else {
     Write-ErrorLine "⚠️ Execution ended with state '$finalState'"
     exit 1
+
 }
