@@ -65,7 +65,7 @@ $tokenResponse = Invoke-WithRetry {
 }
 $accessToken = $tokenResponse.access_token
 if (-not $accessToken) { throw "No access_token returned from token endpoint." }
-Write-Info "✅ Token acquired."
+Write-Info "Token acquired."
 
 # Common headers for Playlist API
 $apiHeaders = @{
@@ -85,10 +85,10 @@ try {
         try {
             $triggerBody = Get-Content -Path $PlaylistConfigFilePath -Raw
             $null = $triggerBody | ConvertFrom-Json  # validate JSON
-            Write-Info "✅ Playlist JSON payload validated successfully."
+            Write-Info "Playlist JSON payload validated successfully."
         }
         catch {
-            throw "❌ Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)"
+            throw "Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)"
         }
     }
     else {
@@ -128,10 +128,10 @@ try {
         throw "No run ID returned. Raw response: $($triggerResp | ConvertTo-Json -Depth 6)" 
     }
 
-    Write-Info "✅ Playlist run started successfully. Run ID: $runId"
+    Write-Info "Playlist run started successfully. Run ID: $runId"
 }
 catch {
-    Write-ErrorLine "❌ Failed to trigger playlist: $($_.Exception.Message)"
+    Write-ErrorLine "Failed to trigger playlist: $($_.Exception.Message)"
     exit 1
 }
 
@@ -169,7 +169,7 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if (-not $finalState) {
-    Write-ErrorLine "⏱ Timeout reached without final state"
+    Write-ErrorLine "Timeout reached without final state"
     $finalState = "timeout"
 }
 
@@ -206,16 +206,16 @@ try {
             $junitXml = $response.OuterXml
 
             if ($junitXml -match "<testcase") {
-                Write-Info "✅ Valid JUnit results detected on attempt $attempt."
+                Write-Info "Valid JUnit results detected on attempt $attempt."
                 break
             }
             else {
-                Write-Info "⚠️ Results not ready yet (no <testcase> found). Waiting $retryDelay seconds..."
+                Write-Info "Results not ready yet (no '<testcase>' found). Waiting $retryDelay seconds..."
                 Start-Sleep -Seconds $retryDelay
             }
         }
         catch {
-            Write-ErrorLine "⚠️ Error fetching JUnit (attempt $attempt): $($_.Exception.Message)"
+            Write-ErrorLine "Error fetching JUnit (attempt $attempt): $($_.Exception.Message)"
             Start-Sleep -Seconds $retryDelay
         }
     } while ($attempt -lt $maxRetries)
@@ -234,31 +234,32 @@ try {
 			$junitXml | Out-File -FilePath $resultsFilePath -Encoding UTF8
 		}
 
-        Write-Info "📄 JUnit results saved to: $resultsFilePath"
+        Write-Info "JUnit results saved to: $resultsFilePath"
     }
     else {
-        Write-ErrorLine "❌ No JUnit content returned after waiting $($maxRetries * $retryDelay) seconds."
+        Write-ErrorLine "No JUnit content returned after waiting $($maxRetries * $retryDelay) seconds."
     }
 }
 catch {
-    Write-ErrorLine "⚠️ Could not download JUnit results: $($_.Exception.Message)"
+    Write-ErrorLine "Could not download JUnit results: $($_.Exception.Message)"
 }
 
 # ---------- 5) Exit code based on final state ----------
 if ($finalState -in @("succeeded","passed","completed")) {
-    Write-Info "🎉 Playlist [$PlaylistId] completed successfully."
+    Write-Info "Playlist [$PlaylistId] completed successfully."
     exit 0
 }
 elseif ($finalState -eq "failed") {
-    Write-ErrorLine "❌ Playlist [$PlaylistId] failed."
+    Write-ErrorLine "Playlist [$PlaylistId] failed."
     exit 1
 }
 elseif ($finalState -eq "canceled") {
-    Write-ErrorLine "🚫 Playlist [$PlaylistId] was cancelled."
+    Write-ErrorLine "Playlist [$PlaylistId] was cancelled."
     exit 1
 }
 else {
-    Write-ErrorLine "⚠️ Execution ended with state '$finalState'"
+    Write-ErrorLine "Execution ended with state '$finalState'"
     exit 1
 
 }
+
