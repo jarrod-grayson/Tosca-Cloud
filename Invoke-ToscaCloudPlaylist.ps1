@@ -138,6 +138,7 @@ try {
         catch { throw "Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)" }
     }
 	}
+	}
     else {
         if (-not $PlaylistId) {
             if ($PlaylistName) {
@@ -154,7 +155,7 @@ try {
         $triggerBodyObj = [ordered]@{ playlistId = $PlaylistId; private = $false; parameterOverrides = @() }
         $triggerBody = $triggerBodyObj | ConvertTo-Json -Depth 5
     }
-
+	}
     Write-DebugMessage "Trigger request body:`n$triggerBody"
 
     $triggerUrl = "$TenantBaseUrl/$SpaceId/_playlists/api/v2/playlistRuns"
@@ -312,3 +313,4 @@ else {
     Write-ErrorLine ("Execution ended with state '{0}'" -f $finalState)
     exit 1
 }
+
