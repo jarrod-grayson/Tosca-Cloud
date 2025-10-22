@@ -137,8 +137,6 @@ try {
         try { $null = $triggerBody | ConvertFrom-Json }
         catch { throw "Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)" }
     }
-	}
-	}
     else {
         if (-not $PlaylistId) {
             if ($PlaylistName) {
@@ -150,12 +148,11 @@ try {
                 throw "You must provide either PlaylistId, PlaylistName, or PlaylistConfigFilePath."
             }
         }
-		}
 
         $triggerBodyObj = [ordered]@{ playlistId = $PlaylistId; private = $false; parameterOverrides = @() }
         $triggerBody = $triggerBodyObj | ConvertTo-Json -Depth 5
     }
-	}
+
     Write-DebugMessage "Trigger request body:`n$triggerBody"
 
     $triggerUrl = "$TenantBaseUrl/$SpaceId/_playlists/api/v2/playlistRuns"
@@ -165,23 +162,22 @@ try {
         Invoke-RestMethod -Method POST -Uri $triggerUrl -Headers $apiHeaders -Body $triggerBody
     }
 
-    if ($triggerResp.id) { 
-        $runId = $triggerResp.id 
-    } elseif ($triggerResp.executionId) { 
-        $runId = $triggerResp.executionId 
-    } else { 
-        $runId = $null 
+    if ($triggerResp.id) {
+        $runId = $triggerResp.id
+    } elseif ($triggerResp.executionId) {
+        $runId = $triggerResp.executionId
+    } else {
+        $runId = $null
     }
 
     if (-not $runId) { throw "No run ID returned. Raw response: $($triggerResp | ConvertTo-Json -Depth 6)" }
     Write-Info "Playlist run started successfully. Run ID: $runId"
-	
-	if ($enqueueOnly) {
-        Write-Info "enqueueOnly switch provided — skipping monitoring and results retrieval."
 
+    if ($enqueueOnly) {
+        Write-Info "enqueueOnly switch provided — skipping monitoring and results retrieval."
         Write-Info "Playlist triggered successfully. Run ID: $runId"
         exit 0
-}
+    }
 }
 catch {
     Write-ErrorLine "Failed to trigger playlist: $($_.Exception.Message)"
@@ -313,4 +309,5 @@ else {
     Write-ErrorLine ("Execution ended with state '{0}'" -f $finalState)
     exit 1
 }
+
 
