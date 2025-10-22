@@ -164,9 +164,11 @@ try {
 
     if ($triggerResp.id) {
         $runId = $triggerResp.id
-    } elseif ($triggerResp.executionId) {
+    }
+    elseif ($triggerResp.executionId) {
         $runId = $triggerResp.executionId
-    } else {
+    }
+    else {
         $runId = $null
     }
 
@@ -309,5 +311,6 @@ else {
     Write-ErrorLine ("Execution ended with state '{0}'" -f $finalState)
     exit 1
 }
+
 
 
