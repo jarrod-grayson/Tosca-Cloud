@@ -26,10 +26,12 @@ stages:
             -ClientId "$(ToscaClientId)"
             -ClientSecret "$(ToscaClientSecret)"
             -Scope "tta"
-            -TenantBaseUrl "https://$(ToscaTenant).my.tricentis.com/$(ToscaWorkspaceID)"
-            -PlaylistConfigFilePath "PlaylistConfig.json"
+            -TenantBaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -SpaceId "$(ToscaWorkspaceID)"
+            -PlaylistName "Smoke"
             -ResultsFileName "results.xml"
             -ResultsFolderPath "C:\Tricentis\Tosca\Results"
+            -VerboseMode
         displayName: 'Execute Tosca Cloud Playlist and Upload Results'
 
 
