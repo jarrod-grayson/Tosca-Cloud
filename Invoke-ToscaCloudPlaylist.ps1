@@ -137,6 +137,7 @@ try {
         try { $null = $triggerBody | ConvertFrom-Json }
         catch { throw "Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)" }
     }
+	}
     else {
         if (-not $PlaylistId) {
             if ($PlaylistName) {
@@ -148,6 +149,7 @@ try {
                 throw "You must provide either PlaylistId, PlaylistName, or PlaylistConfigFilePath."
             }
         }
+		}
 
         $triggerBodyObj = [ordered]@{ playlistId = $PlaylistId; private = $false; parameterOverrides = @() }
         $triggerBody = $triggerBodyObj | ConvertTo-Json -Depth 5
