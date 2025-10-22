@@ -10,30 +10,43 @@
     -ClientSecret $env:TOSCA_CLIENT_SECRET `
     -Scope "tta" `
     -TenantBaseUrl "https://amspresales.my.tricentis.com/72548120-3e17-4758-8c12-b75bb448d443" `
-    -PlaylistId "7d423f50-73d0-42bf-947d-5b5c3c51e2b4" `
-    -ParameterOverridesJson '[{"name":"Browser","value":"Chrome"}]'
+    -PlaylistConfigFilePath "PlaylistConfig.json" `
+    -ResultsFileName "results.xml" `
+    -ResultsFolderPath "C:\Tricentis\Tosca\Results" `
+    -VerboseMode
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)] [string]$TokenUrl,
-    [Parameter(Mandatory=$true)] [string]$ClientId,
-    [Parameter(Mandatory=$true)] [string]$ClientSecret,
-    [Parameter(Mandatory=$true)] [string]$Scope,
-    [Parameter(Mandatory=$true)] [string]$TenantBaseUrl,
+    [Parameter(Mandatory=$true)]  [string]$TokenUrl,
+    [Parameter(Mandatory=$true)]  [string]$ClientId,
+    [Parameter(Mandatory=$true)]  [string]$ClientSecret,
+	[Parameter(Mandatory=$false)] [string]$BearerToken,
+    [Parameter(Mandatory=$false)] [string]$Scope = "tta",
+    [Parameter(Mandatory=$true)]  [string]$TenantBaseUrl,
+	[Parameter(Mandatory=$true)]  [string]$SpaceId = "",
 
     [Parameter(Mandatory=$false)] [string]$PlaylistId,
     [Parameter(Mandatory=$false)] [string]$PlaylistConfigFilePath,
+    [Parameter(Mandatory=$false)] [string]$PlaylistName,
 
     [Parameter(Mandatory=$false)] [int]$PollSeconds = 10,
     [Parameter(Mandatory=$false)] [int]$TimeoutMinutes = 60,
-    [Parameter(Mandatory=$false)] [string]$ResultsFileName,
-    [Parameter(Mandatory=$false)] [string]$ResultsFolderPath
+    [Parameter(Mandatory=$false)] [string]$ResultsFileName = "results.xml",
+    [Parameter(Mandatory=$false)] [string]$ResultsFolderPath = ".",
+    [Parameter(Mandatory=$false)] [switch]$VerboseMode,
+    [Parameter(Mandatory=$false)] [switch]$enqueueOnly
+
 )
 
 # ---------- Utility Functions ----------
+function Write-Banner {
+    param([string]$Text)
+    Write-Host "`n=== $Text ===" -ForegroundColor Cyan
+}
 function Write-Info  { param([string]$m) Write-Host "[$(Get-Date -Format o)] $m" }
 function Write-ErrorLine { param([string]$m) Write-Host "[$(Get-Date -Format o)] ERROR: $m" -ForegroundColor Red }
+function Write-DebugMessage { param([string]$m) if ($VerboseMode) { Write-Host "[DEBUG] $m" -ForegroundColor Yellow } }
 
 function Invoke-WithRetry {
   param(
@@ -53,97 +66,136 @@ function Invoke-WithRetry {
   }
 }
 
-# ---------- 1) Get OAuth token ----------
-Write-Info "Requesting OAuth token..."
-$tokenBody = "grant_type=client_credentials&client_id=$([uri]::EscapeDataString($ClientId))&client_secret=$([uri]::EscapeDataString($ClientSecret))&scope=$([uri]::EscapeDataString($Scope))"
+# ---------- NEW: Resolve Playlist by Name ----------
+function Get-PlaylistIdByName {
+    param (
+        [Parameter(Mandatory=$true)] [string]$TenantBaseUrl,
+        [Parameter(Mandatory=$true)] [string]$SpaceId,
+        [Parameter(Mandatory=$true)] [string]$BearerToken,
+        [Parameter(Mandatory=$true)] [string]$PlaylistName
+    )
 
-$tokenResponse = Invoke-WithRetry {
-  Invoke-RestMethod -Method POST -Uri $TokenUrl `
-    -Headers @{ "Accept"="application/json"; "Content-Type"="application/x-www-form-urlencoded" } `
-    -Body $tokenBody
+    Write-Info "Resolving Playlist ID for '$PlaylistName'..."
+    $encodedName = [uri]::EscapeDataString($PlaylistName)
+    $url = "$TenantBaseUrl/$SpaceId/_playlists/api/v2/playlists?name=equals($encodedName)"
+
+    try {
+        $response = Invoke-RestMethod -Method GET -Uri $url -Headers @{
+            "Accept"        = "application/json"
+            "Authorization" = "Bearer $BearerToken"
+        } -ErrorAction Stop
+
+        if ($null -eq $response.items -or $response.items.Count -eq 0) {
+            throw "No playlist found with name '$PlaylistName'."
+        }
+
+        $playlist = $response.items[0]
+        Write-Info "Found Playlist ID: $($playlist.id)"
+        return $playlist.id
+    }
+    catch {
+        Write-ErrorLine "Failed to resolve Playlist ID: $($_.Exception.Message)"
+        throw
+    }
 }
-$accessToken = $tokenResponse.access_token
-if (-not $accessToken) { throw "No access_token returned from token endpoint." }
-Write-Info "Token acquired."
 
-# Common headers for Playlist API
+# ---------- 1) Get OAuth token (if not provided) ----------
+Write-Banner "STEP 1: Authentication"
+
+if (-not $BearerToken) {
+    Write-Info "Requesting OAuth token..."
+    $tokenBody = "grant_type=client_credentials&client_id=$([uri]::EscapeDataString($ClientId))&client_secret=$([uri]::EscapeDataString($ClientSecret))&scope=$([uri]::EscapeDataString($Scope))"
+
+    $tokenResponse = Invoke-WithRetry {
+      Invoke-RestMethod -Method POST -Uri $TokenUrl `
+        -Headers @{ "Accept"="application/json"; "Content-Type"="application/x-www-form-urlencoded" } `
+        -Body $tokenBody
+    }
+    $accessToken = $tokenResponse.access_token
+    if (-not $accessToken) { throw "No access_token returned from token endpoint." }
+    $BearerToken = $accessToken
+    Write-Info "Token acquired."
+}
+else {
+    Write-Info "Using pre-supplied Bearer token."
+}
+
+# Common headers
 $apiHeaders = @{
-  "Authorization" = "Bearer $accessToken"
+  "Authorization" = "Bearer $BearerToken"
   "Accept"        = "application/json"
   "Content-Type"  = "application/json"
 }
 
 # ---------- 2) Trigger playlist run ----------
-Write-Info "Triggering playlist run..."
+Write-Banner "STEP 2: Trigger Playlist Run"
 
 try {
-    # If PlaylistConfigFilePath provided, use that JSON
     if ($PlaylistConfigFilePath -and (Test-Path $PlaylistConfigFilePath)) {
         Write-Info "Using JSON payload from file: $PlaylistConfigFilePath"
-
-        try {
-            $triggerBody = Get-Content -Path $PlaylistConfigFilePath -Raw
-            $null = $triggerBody | ConvertFrom-Json  # validate JSON
-            Write-Info "Playlist JSON payload validated successfully."
-        }
-        catch {
-            throw "Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)"
-        }
+        $triggerBody = Get-Content -Path $PlaylistConfigFilePath -Raw
+        try { $null = $triggerBody | ConvertFrom-Json }
+        catch { throw "Invalid JSON in PlaylistConfigFilePath '$PlaylistConfigFilePath': $($_.Exception.Message)" }
     }
     else {
-        # Otherwise, build a default body from PlaylistId only
         if (-not $PlaylistId) {
-            throw "PlaylistId is required if PlaylistConfigFilePath is not provided."
+            if ($PlaylistName) {
+                if (-not $SpaceId) { throw "SpaceId is required when resolving PlaylistName." }
+                Write-Info "No PlaylistId provided — resolving via PlaylistName..."
+                $PlaylistId = Get-PlaylistIdByName -TenantBaseUrl $TenantBaseUrl -SpaceId $SpaceId -BearerToken $BearerToken -PlaylistName $PlaylistName
+            }
+            else {
+                throw "You must provide either PlaylistId, PlaylistName, or PlaylistConfigFilePath."
+            }
         }
 
-        Write-Info "No config file provided � building default JSON payload from PlaylistId only."
-        $triggerBodyObj = [ordered]@{
-            playlistId         = $PlaylistId
-            private            = $false
-            parameterOverrides = @()
-        }
+        $triggerBodyObj = [ordered]@{ playlistId = $PlaylistId; private = $false; parameterOverrides = @() }
         $triggerBody = $triggerBodyObj | ConvertTo-Json -Depth 5
     }
 
-    Write-Info "Trigger request body:`n$triggerBody"
+    Write-DebugMessage "Trigger request body:`n$triggerBody"
 
-    # Trigger the playlist
-    $triggerUrl = "$TenantBaseUrl/_playlists/api/v2/playlistRuns"
-    Write-Info "Calling: $triggerUrl"
+    $triggerUrl = "$TenantBaseUrl/$SpaceId/_playlists/api/v2/playlistRuns"
+    Write-DebugMessage "Calling: $triggerUrl"
 
     $triggerResp = Invoke-WithRetry {
         Invoke-RestMethod -Method POST -Uri $triggerUrl -Headers $apiHeaders -Body $triggerBody
     }
 
-    $runId = if ($triggerResp.id) { 
-        $triggerResp.id 
+    if ($triggerResp.id) { 
+        $runId = $triggerResp.id 
     } elseif ($triggerResp.executionId) { 
-        $triggerResp.executionId 
+        $runId = $triggerResp.executionId 
     } else { 
-        $null 
+        $runId = $null 
     }
 
-    if (-not $runId) { 
-        throw "No run ID returned. Raw response: $($triggerResp | ConvertTo-Json -Depth 6)" 
-    }
-
+    if (-not $runId) { throw "No run ID returned. Raw response: $($triggerResp | ConvertTo-Json -Depth 6)" }
     Write-Info "Playlist run started successfully. Run ID: $runId"
+	
+	if ($enqueueOnly) {
+        Write-Info "enqueueOnly switch provided — skipping monitoring and results retrieval."
+
+        Write-Info "Playlist triggered successfully. Run ID: $runId"
+        exit 0
+}
 }
 catch {
     Write-ErrorLine "Failed to trigger playlist: $($_.Exception.Message)"
     exit 1
 }
 
-# ---------- 3) Poll Status (end) ----------
+# ---------- 3) Poll Status ----------
+Write-Banner "STEP 3: Monitor Playlist Run"
+
 $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 $activeStates = @("pending","running","starting")
-
 $finalState = $null
 
 while ((Get-Date) -lt $deadline) {
     try {
         Start-Sleep -Seconds $PollSeconds
-        $statusUrl = "$TenantBaseUrl/_playlists/api/v2/playlistRuns/$runId"
+        $statusUrl = "$TenantBaseUrl/$SpaceId/_playlists/api/v2/playlistRuns/$runId"
         $statusResp = Invoke-RestMethod -Method GET -Uri $statusUrl -Headers $apiHeaders
         $state = $statusResp.state
         if (-not $state) {
@@ -153,11 +205,8 @@ while ((Get-Date) -lt $deadline) {
         Write-Info "Current playlist state: $state"
         $normalized = $state.ToLower()
 
-        if ($activeStates -contains $normalized) {
-            continue
-        }
+        if ($activeStates -contains $normalized) { continue }
 
-        # At this point, state is final (not pending/running)
         $finalState = $normalized
         break
     }
@@ -174,10 +223,12 @@ if (-not $finalState) {
 
 Write-Info "Final state: $finalState"
 
-# ---------- 4) Always attempt to fetch JUnit results ----------
+# ---------- 4) Fetch JUnit results ----------
+Write-Banner "STEP 4: Retrieve JUnit Results"
+
 try {
-    $resultsUrl = "$TenantBaseUrl/_playlists/api/v2/playlistRuns/$runId/junit"
-    Write-Info "Attempting to download JUnit results from: $resultsUrl"
+    $resultsUrl = "$TenantBaseUrl/$SpaceId/_playlists/api/v2/playlistRuns/$runId/junit"
+    Write-DebugMessage "Attempting to download JUnit results from: $resultsUrl"
 
     if (-not (Test-Path $ResultsFolderPath)) {
         Write-Info "Creating results folder: $ResultsFolderPath"
@@ -185,7 +236,6 @@ try {
     }
 
     $resultsFilePath = Join-Path -Path $ResultsFolderPath -ChildPath $ResultsFileName
-
     $maxRetries = 12
     $retryDelay = 10
     $attempt = 0
@@ -197,17 +247,16 @@ try {
             Write-Info "[$attempt/$maxRetries] Fetching JUnit results..."
             $response = Invoke-RestMethod -Method GET -Uri $resultsUrl -Headers @{
                 "Accept"        = "application/xml"
-                "Authorization" = "Bearer $accessToken"
+                "Authorization" = "Bearer $BearerToken"
             } -TimeoutSec 60
 
             $junitXml = $response.OuterXml
-
             if ($junitXml -match "<testcase") {
                 Write-Info "Valid JUnit results detected on attempt $attempt."
                 break
             }
             else {
-                Write-Info "Warning: Results not ready yet (no `<testcase>` found). Waiting $retryDelay seconds..."
+                Write-Info "Results not ready yet (no '<testcase>' found). Waiting $retryDelay seconds..."
                 Start-Sleep -Seconds $retryDelay
             }
         }
@@ -218,24 +267,21 @@ try {
     } while ($attempt -lt $maxRetries)
 
     if (-not [string]::IsNullOrWhiteSpace($junitXml)) {
+        Write-DebugMessage "Validating JUnit XML structure..."
+        try { [xml]$null = $junitXml; Write-DebugMessage "XML validation successful." }
+        catch { Write-ErrorLine "Warning: Invalid XML detected; saving raw content anyway." }
+
         $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-        $formattedXml = $null
-
-        if ($response -is [xml]) {
-            $stringWriter = New-Object System.IO.StringWriter
-            $xmlWriter = New-Object System.Xml.XmlTextWriter($stringWriter)
-            $xmlWriter.Formatting = "Indented"
-            $response.Save($xmlWriter)
-            $formattedXml = $stringWriter.ToString()
-        }
-        else {
-            $formattedXml = $junitXml
-        }
-
-        $formattedXml = $formattedXml -replace 'encoding="utf-16"', 'encoding="utf-8"'
+        $formattedXml = $junitXml -replace 'encoding="utf-16"', 'encoding="utf-8"'
         [System.IO.File]::WriteAllText($resultsFilePath, $formattedXml, $utf8Bom)
 
-        Write-Info "JUnit results saved to: $resultsFilePath (UTF-8 BOM encoded)"
+        if (Test-Path $resultsFilePath) {
+            $fileInfo = Get-Item $resultsFilePath
+            Write-Info "JUnit results saved to: $resultsFilePath (${($fileInfo.Length)} bytes)"
+        }
+        else {
+            Write-ErrorLine "Warning: JUnit results file not found after write."
+        }
     }
     else {
         Write-ErrorLine "No JUnit content returned after waiting $($maxRetries * $retryDelay) seconds."
@@ -245,7 +291,9 @@ catch {
     Write-ErrorLine "Could not download JUnit results: $($_.Exception.Message)"
 }
 
-# ---------- 5) Exit code based on final state ----------
+# ---------- 5) Exit based on result ----------
+Write-Banner "STEP 5: Final Result"
+
 if ($finalState -in @("succeeded","passed","completed")) {
     Write-Info "Playlist [$PlaylistId] completed successfully."
     exit 0
