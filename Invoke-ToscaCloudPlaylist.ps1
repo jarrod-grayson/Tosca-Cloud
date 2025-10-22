@@ -162,24 +162,23 @@ try {
         Invoke-RestMethod -Method POST -Uri $triggerUrl -Headers $apiHeaders -Body $triggerBody
     }
 
-    if ($triggerResp.id) {
-        $runId = $triggerResp.id
-    }
-    elseif ($triggerResp.executionId) {
-        $runId = $triggerResp.executionId
-    }
-    else {
-        $runId = $null
+    if ($triggerResp.id) { 
+        $runId = $triggerResp.id 
+    } elseif ($triggerResp.executionId) { 
+        $runId = $triggerResp.executionId 
+    } else { 
+        $runId = $null 
     }
 
     if (-not $runId) { throw "No run ID returned. Raw response: $($triggerResp | ConvertTo-Json -Depth 6)" }
     Write-Info "Playlist run started successfully. Run ID: $runId"
-
-    if ($enqueueOnly) {
+	
+	if ($enqueueOnly) {
         Write-Info "enqueueOnly switch provided — skipping monitoring and results retrieval."
+
         Write-Info "Playlist triggered successfully. Run ID: $runId"
         exit 0
-    }
+}
 }
 catch {
     Write-ErrorLine "Failed to trigger playlist: $($_.Exception.Message)"
@@ -311,6 +310,3 @@ else {
     Write-ErrorLine ("Execution ended with state '{0}'" -f $finalState)
     exit 1
 }
-
-
-
