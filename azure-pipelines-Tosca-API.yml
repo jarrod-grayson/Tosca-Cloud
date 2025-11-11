@@ -38,6 +38,7 @@ stages:
   
       - task: PowerShell@2
         displayName: 'Convert JUnit results to UTF-8'
+        condition: always()
         inputs:
           targetType: 'inline'
           script: |
@@ -48,6 +49,7 @@ stages:
 
       - task: PublishTestResults@2
         displayName: 'Publish Test Results'
+        condition: always()
         inputs:
           testResultsFiles: 'C:\Tricentis\Tosca\Results\results_utf8.xml'
           testResultsFormat: 'JUnit'
