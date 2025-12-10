@@ -54,8 +54,3 @@ jobs:
         uses: EnricoMi/publish-unit-test-result-action/windows@v2
         with:
           files: test-results/results_utf8.xml
-
-
-      - name: Stop Simulator Agent
-        if: always()
-        run: ./stop-simulator.ps1
