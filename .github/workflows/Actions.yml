@@ -1,0 +1,61 @@
+name: GitHub Actions Tosca Cloud Integration
+run-name: ${{ github.actor }} is Running Tosca Tests 🚀
+on: [workflow_dispatch]
+jobs:
+  Tosca_Cloud_Execution:
+    runs-on: [self-hosted, windows]   # will run on your local Windows runner
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Execute Tosca Cloud Playlist
+        shell: pwsh
+        env:
+          TOSCA_AUTH_URL: ${{ secrets.TOSCA_AUTH_URL }}
+          TOSCA_CLIENT_ID: ${{ secrets.TOSCA_CLIENT_ID }}
+          TOSCA_CLIENT_SECRET: ${{ secrets.TOSCA_CLIENT_SECRET }}
+          TOSCA_TENANT: ${{ secrets.TOSCA_TENANT }}
+          TOSCA_WORKSPACE_ID: ${{ secrets.TOSCA_WORKSPACE_ID }}
+        run: >
+          ./tosca_cloud_executionclient.ps1
+          -TokenUrl "$env:TOSCA_AUTH_URL"
+          -ClientId "$env:TOSCA_CLIENT_ID"
+          -ClientSecret "$env:TOSCA_CLIENT_SECRET"
+          -Scope "tta"
+          -TenantBaseUrl "https://$env:TOSCA_TENANT.my.tricentis.com"
+          -SpaceId "$env:TOSCA_WORKSPACE_ID"
+          -PlaylistName "Coffeeshop APIs"
+          -ResultsFileName "results.xml"
+          -ResultsFolderPath "C:\Tricentis\Tosca\Results"
+          -VerboseMode
+
+      - name: Wait 5 seconds
+        run: sleep 5
+        shell: bash
+
+      - name: Convert JUnit results to UTF-8
+        if: always()
+        shell: pwsh
+        run: |
+          $source = "C:\Tricentis\Tosca\Results\results.xml"
+          $dest   = "C:\Tricentis\Tosca\Results\results_utf8.xml"
+          [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
+
+      - name: Copy JUnit results into workspace
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path test-results | Out-Null
+          Copy-Item "C:\Tricentis\Tosca\Results\results_utf8.xml" "test-results/results_utf8.xml"
+
+      - name: Publish Test Results (JUnit)
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        with:
+          files: test-results/results_utf8.xml
+
+
+      - name: Stop Simulator Agent
+        if: always()
+        run: ./stop-simulator.ps1
