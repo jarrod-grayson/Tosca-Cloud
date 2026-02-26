@@ -1,9 +1,12 @@
 name: GitHub Actions Tosca Cloud Integration
 run-name: ${{ github.actor }} is Running Tosca Tests 🚀
-on: [workflow_dispatch]
+
+on:
+  workflow_dispatch:
+
 jobs:
   Tosca_Cloud_Execution:
-    runs-on: [self-hosted, windows]   # will run on your local Windows runner
+    runs-on: [self-hosted, windows]
 
     steps:
       - name: Checkout repository
@@ -18,39 +21,29 @@ jobs:
           TOSCA_TENANT: ${{ secrets.TOSCA_TENANT }}
           TOSCA_WORKSPACE_ID: ${{ secrets.TOSCA_WORKSPACE_ID }}
         run: >
-          ./tosca_cloud_executionclient.ps1
-          -TokenUrl "$env:TOSCA_AUTH_URL"
+          ./tosca_cloud_execution_client.ps1
+          -BaseUrl "https://$env:TOSCA_TENANT.my.tricentis.com"
           -ClientId "$env:TOSCA_CLIENT_ID"
           -ClientSecret "$env:TOSCA_CLIENT_SECRET"
-          -Scope "tta"
-          -TenantBaseUrl "https://$env:TOSCA_TENANT.my.tricentis.com"
+          -TokenUrl "$env:TOSCA_AUTH_URL"
           -SpaceId "$env:TOSCA_WORKSPACE_ID"
-          -PlaylistName "Coffeeshop APIs"
-          -ResultsFileName "results.xml"
-          -ResultsFolderPath "C:\Tricentis\Tosca\Results"
-          -VerboseMode
-
-      - name: Wait 5 seconds
-        run: sleep 5
-        shell: bash
-
-      - name: Convert JUnit results to UTF-8
-        if: always()
-        shell: pwsh
-        run: |
-          $source = "C:\Tricentis\Tosca\Results\results.xml"
-          $dest   = "C:\Tricentis\Tosca\Results\results_utf8.xml"
-          [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
+          -PlaylistName "Smoke"
+          -StartNewRun
+          -MonitorRun
+          -RetrieveResults
+          -JUnitResultsFile "C:\Tricentis\Tosca\Results\results.xml"
 
       - name: Copy JUnit results into workspace
         if: always()
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path test-results | Out-Null
-          Copy-Item "C:\Tricentis\Tosca\Results\results_utf8.xml" "test-results/results_utf8.xml"
+          Copy-Item "C:\Tricentis\Tosca\Results\results.xml" "test-results/results.xml" -ErrorAction SilentlyContinue
 
-      - name: Publish Test Results (JUnit)
+      - name: Upload JUnit Results Artifact
         if: always()
-        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        uses: actions/upload-artifact@v4
         with:
-          files: test-results/results_utf8.xml
+          name: tosca-junit-results
+          path: test-results/results.xml
+          if-no-files-found: warn
