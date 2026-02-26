@@ -4,7 +4,7 @@
 # https://aka.ms/yaml
 
 trigger:
-- main
+- none
 
 stages:
 
@@ -20,22 +20,22 @@ stages:
 
       - task: PowerShell@2
         inputs:
-          filePath: $(System.DefaultWorkingDirectory)\tosca_cloud_executionclient.ps1
+          filePath: $(System.DefaultWorkingDirectory)\tosca_cloud_execution_client.ps1
           arguments: >
-            -TokenUrl "$(ToscaAuthURL)"
+            -BaseUrl "https://$(ToscaTenant).my.tricentis.com"
             -ClientId "$(ToscaClientId)"
             -ClientSecret "$(ToscaClientSecret)"
-            -Scope "tta"
-            -TenantBaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -TokenUrl "$(ToscaAuthURL)"
             -SpaceId "$(ToscaWorkspaceID)"
-            -PlaylistName "Regression - Web To Lead"
-            -ResultsFileName "results.xml"
-            -ResultsFolderPath "C:\Tricentis\Tosca\Results"
-            -VerboseMode
+            -PlaylistName "Smoke"
+            -StartNewRun
+            -MonitorRun
+            -PollingInterval 10
+            -MaxPollingTimeout 7200
+            -RetrieveResults
+            -JUnitResultsFile "C:\Tricentis\Tosca\Results\results.xml"
         displayName: 'Execute Tosca Cloud Playlist and Upload Results'
 
-
-  
       - task: PowerShell@2
         displayName: 'Convert JUnit results to UTF-8'
         condition: always()
@@ -45,7 +45,6 @@ stages:
             $source = "C:\Tricentis\Tosca\Results\results.xml"
             $dest = "C:\Tricentis\Tosca\Results\results_utf8.xml"
             [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
-
 
       - task: PublishTestResults@2
         displayName: 'Publish Test Results'
