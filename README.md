@@ -17,7 +17,7 @@ It uses Tosca Cloud’s public REST APIs to start executions, monitor progress, 
 The PowerShell script in this repository is based on the Tricentis sample:
 
 **KB Article:**  
-[Tosca Cloud Playlist API sample script (KB0022297)](https://support-hub.tricentis.com/open?id=kb_article_view&sysparm_article=KB0022297)
+[Custom ToscaExecutionClient Powershell script for executing Tosca Cloud Playlists (KB0022297)](https://support-hub.tricentis.com/open?id=kb_article_view&sysparm_article=KB0022297)
 
 This repo provides a **pipeline-ready implementation** and examples for CI/CD usage.
 
@@ -132,4 +132,5 @@ The **Playlist API** allows you to:
 - Trigger test playlist executions
 - Monitor their current state (`pending`, `running`, `succeeded`, `failed`, `cancelled`)
 - Retrieve and download **JUnit results** once the run completes
+
 
