@@ -5,7 +5,8 @@ This repository demonstrates how to trigger and monitor **Tosca Cloud Playlist e
 - Azure DevOps  
 - GitHub Actions  
 - Jenkins  
-- GitLab CI  
+- GitLab CI
+- Harness  
 
 It uses Tosca Cloud’s public REST APIs to start executions, monitor progress, and download results for reporting.
 
@@ -131,3 +132,4 @@ The **Playlist API** allows you to:
 - Trigger test playlist executions
 - Monitor their current state (`pending`, `running`, `succeeded`, `failed`, `cancelled`)
 - Retrieve and download **JUnit results** once the run completes
+
