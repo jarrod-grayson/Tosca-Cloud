@@ -27,7 +27,7 @@ stages:
             -ClientSecret "$(ToscaClientSecret)"
             -TokenUrl "$(ToscaAuthURL)"
             -SpaceId "$(ToscaWorkspaceID)"
-            -PlaylistName "Smoke"
+            -PlaylistName "Regression - Web To Lead - End to End"
             -StartNewRun
             -MonitorRun
             -PollingInterval 10
