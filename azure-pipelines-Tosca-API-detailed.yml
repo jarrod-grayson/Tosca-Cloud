@@ -4,16 +4,81 @@
 # https://aka.ms/yaml
 
 trigger:
-- main
+- none
 
-pool:
-  vmImage: ubuntu-latest
+stages:
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+- stage: Test
+  displayName: Test
+  jobs:
+    - job: Test
+      pool:
+        name: Default
+      steps:
+      - script: echo Test
+        displayName: 'Prepare Testing'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+      - task: PowerShell@2
+        inputs:
+          filePath: $(System.DefaultWorkingDirectory)\tosca_cloud_execution_client.ps1
+          arguments: >
+            -BaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -ClientId "$(ToscaClientId)"
+            -ClientSecret "$(ToscaClientSecret)"
+            -TokenUrl "$(ToscaAuthURL)"
+            -SpaceId "$(ToscaWorkspaceID)"
+            -PlaylistName "Regression - Web To Lead - End to End"
+            -StartNewRun
+            -MonitorRun
+            -PollingInterval 10
+            -MaxPollingTimeout 7200
+            -RetrieveResults
+            -JUnitResultsFile "C:\Tricentis\Tosca\Results\results.xml"
+        displayName: 'Execute Tosca Cloud Playlist and Upload Results'
+
+      - task: PowerShell@2
+        displayName: 'Convert JUnit results to UTF-8'
+        condition: always()
+        inputs:
+          targetType: 'inline'
+          script: |
+            $source = "C:\Tricentis\Tosca\Results\results.xml"
+            $dest = "C:\Tricentis\Tosca\Results\results_utf8.xml"
+            [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
+
+      - task: PublishTestResults@2
+        displayName: 'Publish Test Results'
+        condition: always()
+        inputs:
+          testResultsFiles: 'C:\Tricentis\Tosca\Results\results_utf8.xml'
+          testResultsFormat: 'JUnit'
+
+      # -------------------------------------------------------------------
+      # NEW: enrich failed tests with step-level HTML and attach to results.
+      # Runs on failure too (condition: always) - that's when it matters.
+      # SYSTEM_ACCESSTOKEN is required to attach files to test results.
+      # -------------------------------------------------------------------
+      - task: PowerShell@2
+        displayName: 'Attach step-level detail to failed tests'
+        condition: always()
+        env:
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        inputs:
+          filePath: $(System.DefaultWorkingDirectory)\Publish-ToscaStepDetails.ps1
+          arguments: >
+            -BaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -ClientId "$(ToscaClientId)"
+            -ClientSecret "$(ToscaClientSecret)"
+            -TokenUrl "$(ToscaAuthURL)"
+            -SpaceId "$(ToscaWorkspaceID)"
+            -PlaylistName "Regression - Web To Lead - End to End"
+            -OutputDir "$(Build.ArtifactStagingDirectory)\ToscaStepReports"
+            -AttachToTestResults $true
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish step-detail reports'
+        condition: always()
+        inputs:
+          targetPath: '$(Build.ArtifactStagingDirectory)\ToscaStepReports'
+          artifact: 'ToscaStepReports'
+          publishLocation: 'pipeline'
