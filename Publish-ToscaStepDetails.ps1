@@ -20,6 +20,8 @@
 param(
     [string]   $BaseUrl,
     [string]   $SpaceId,
+    [string]   $PortalBaseUrl = "",
+    [string]   $SpaceName     = "",
     [string]   $ClientId,
     [string]   $ClientSecret,
     [string]   $TokenUrl,
@@ -337,6 +339,11 @@ try {
 
     # Markdown summary tab (emoji + counts, pipe-safe)
     $md  = "# Tosca failed tests - step detail`n`n"
+    $portal = if ($PortalBaseUrl) { $PortalBaseUrl } else { $BaseUrl }
+    if ($SpaceName) {
+        $runUrl = "$portal/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId"
+        $md += "**[Open run in Tosca Cloud]($runUrl)**`n`n"
+    }
     $md += "**Playlist run:** ``$PlaylistRunId``  `n"
     $md += "**Failed test cases:** $($reportIndex.Count)`n`n"
     $md += "|  | Test case | State | Report |`n|---|---|---|---|`n"
