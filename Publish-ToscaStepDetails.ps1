@@ -294,7 +294,8 @@ try {
 
     # Markdown summary tab
     $md = "# Tosca failed tests - step detail`n`nPlaylist run: ``$PlaylistRunId```n`n| Test case | State | Report |`n|---|---|---|`n"
-    foreach ($r in $reportIndex) { $md += "| $($r.Name) | $($r.State) | $($r.File) |`n" }
+    function Escape-Md { param($s) if ($null -eq $s) { return "" } return ([string]$s).Replace('|','\|').Replace("`r"," ").Replace("`n"," ") }
+    foreach ($r in $reportIndex) { $md += "| $(Escape-Md $r.Name) | $(Escape-Md $r.State) | $(Escape-Md $r.File) |`n" }
     $mdPath = Join-Path $OutputDir "_summary.md"
     $md | Out-File -FilePath $mdPath -Encoding UTF8
     Write-Host "##vso[task.uploadsummary]$mdPath"
