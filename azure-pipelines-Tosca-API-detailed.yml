@@ -117,6 +117,8 @@ stages:
             -SpaceId "$(ToscaWorkspaceID)"
             -PlaylistName "Regression - Web To Lead - End to End"
             -OutputDir "$(Build.ArtifactStagingDirectory)\ToscaStepReports"
+            -PortalBaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -SpaceName "$(ToscaSpaceName)"
             -AttachToTestResults $true
 
       # -------------------------------------------------------------------
