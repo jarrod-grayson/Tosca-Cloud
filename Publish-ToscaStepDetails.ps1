@@ -1,28 +1,20 @@
 #Requires -Version 3.0
 <#
-    Publish-ToscaStepDetails.ps1
+    Publish-ToscaStepDetails.ps1  (v2 - schema-aware renderer)
     ----------------------------------------------------------------------------
     Runs AFTER your existing execution-client + PublishTestResults@2 steps.
-    It does NOT touch or depend on internals of tosca_cloud_execution_client.ps1.
+    Does NOT depend on internals of tosca_cloud_execution_client.ps1.
 
-    What it does:
-      1. Authenticates (client credentials) - same pattern as your client script.
-      2. Re-derives the playlist RUN id (latest run for the given playlist name),
-         unless you pass -PlaylistRunId explicitly.
-      3. Lists test case runs for that run (paginated) and keeps the FAILED ones.
-      4. For each failed test case run: GET .../testSteps -> contentDownloadUri
-         -> downloads the TestSteps.json (tries anonymous first, then bearer).
-      5. Renders one self-contained HTML report per failed test case.
-      6. Publishes a folder of reports + a Markdown summary tab, and (optionally)
-         attaches each HTML to the matching FAILED test result in the Tests tab.
+    v2 changes vs v1:
+      * New-StepHtml now renders the real TestSteps.json schema as a collapsible
+        step tree (state pills, action-mode tags, durations).
+      * verify steps show Expected vs Actual side-by-side and highlight mismatches.
+      * The failing path auto-expands; passing branches start collapsed.
+      * Secret-looking values (password/token/secret/apikey) are masked.
+      * Markdown summary now has status emoji + a failed-count header.
+      * Pipe characters in the Markdown table are escaped (Escape-Md).
 
-    Design notes:
-      * Best-effort: this script never flips your pass/fail. It always exits 0
-        and only writes warnings on problems, so it can't turn a red run green.
-      * The TestSteps.json schema is not published, so the HTML renderer is
-        schema-agnostic (recursively renders whatever JSON comes back and
-        colour-codes anything that looks like a status/result field). Refine
-        New-StepHtml once you've seen a real payload.
+    Best-effort: always exits 0 so it can never flip your job's pass/fail.
 #>
 
 param(
@@ -33,11 +25,11 @@ param(
     [string]   $TokenUrl,
     [string]   $BearerToken     = "",
     [string]   $PlaylistName,
-    [string]   $PlaylistRunId   = "",                    # optional explicit override
+    [string]   $PlaylistRunId   = "",
     [string]   $OutputDir       = "$env:BUILD_ARTIFACTSTAGINGDIRECTORY\ToscaStepReports",
     [int]      $ItemsPerPage    = 200,
     [int]      $RequestTimeout  = 60,
-    [string[]] $FailedStates    = @('failed'),           # add 'unknown','canceled' if you want them treated as failures
+    [string[]] $FailedStates    = @('failed'),
     [bool]     $AttachToTestResults = $true
 )
 
@@ -48,7 +40,7 @@ function Write-Warn2 { param([string]$m) Write-Host "[$(Get-Date -f 'HH:mm:ss')]
 function Write-Err2  { param([string]$m) Write-Host "[$(Get-Date -f 'HH:mm:ss')] [ERROR] $m" -ForegroundColor Red }
 
 # --------------------------------------------------------------------------
-# Auth
+# Auth / API
 # --------------------------------------------------------------------------
 function Get-Token {
     param([string]$TokenUrl,[string]$ClientId,[string]$ClientSecret,[int]$Timeout)
@@ -60,25 +52,19 @@ function Get-Token {
 }
 
 function Invoke-Api {
-    # small wrapper with one retry on 429/5xx
     param([string]$Uri,[hashtable]$Headers,[int]$Timeout)
     for ($try = 1; $try -le 3; $try++) {
-        try {
-            return Invoke-RestMethod -Uri $Uri -Method Get -Headers $Headers -TimeoutSec $Timeout
-        } catch {
+        try { return Invoke-RestMethod -Uri $Uri -Method Get -Headers $Headers -TimeoutSec $Timeout }
+        catch {
             $code = try { [int]$_.Exception.Response.StatusCode } catch { 0 }
             if (($code -eq 429 -or $code -ge 500) -and $try -lt 3) {
-                Write-Warn2 "GET $Uri returned $code; retry $try after backoff..."
-                Start-Sleep -Seconds (5 * $try); continue
+                Write-Warn2 "GET $Uri returned $code; retry $try after backoff..."; Start-Sleep -Seconds (5 * $try); continue
             }
             throw
         }
     }
 }
 
-# --------------------------------------------------------------------------
-# Resolve the playlist RUN id (latest run for the playlist name)
-# --------------------------------------------------------------------------
 function Resolve-PlaylistRunId {
     param([string]$BaseUrl,[string]$SpaceId,[string]$Token,[string]$PlaylistName,[int]$Timeout)
     $url = "$BaseUrl/$SpaceId/_playlists/api/v2/playlistRuns?sort=desc(createdAt)&itemsPerPage=2000"
@@ -92,9 +78,6 @@ function Resolve-PlaylistRunId {
     return $match.id
 }
 
-# --------------------------------------------------------------------------
-# List FAILED test case runs for a run (paginated)
-# --------------------------------------------------------------------------
 function Get-FailedTestCaseRuns {
     param([string]$BaseUrl,[string]$SpaceId,[string]$Token,[string]$RunId,[int]$PerPage,[string[]]$States,[int]$Timeout)
     $headers = @{ 'Accept'='application/json'; 'Authorization'="Bearer $Token" }
@@ -112,23 +95,17 @@ function Get-FailedTestCaseRuns {
     return ,$failed
 }
 
-# --------------------------------------------------------------------------
-# testSteps metadata -> download the TestSteps.json (anon first, then bearer)
-# --------------------------------------------------------------------------
 function Get-TestStepsJson {
     param([string]$BaseUrl,[string]$SpaceId,[string]$Token,[string]$TcrId,[int]$Timeout)
     $metaUrl = "$BaseUrl/$SpaceId/_playlists/api/v2/testCaseRuns/$TcrId/testSteps"
     $headers = @{ 'Accept'='application/json'; 'Authorization'="Bearer $Token" }
-    try {
-        $meta = Invoke-RestMethod -Uri $metaUrl -Method Get -Headers $headers -TimeoutSec $Timeout
-    } catch {
+    try { $meta = Invoke-RestMethod -Uri $metaUrl -Method Get -Headers $headers -TimeoutSec $Timeout }
+    catch {
         $code = try { [int]$_.Exception.Response.StatusCode } catch { 0 }
         if ($code -eq 404) { Write-Warn2 "No testSteps attachment for $TcrId (404)."; return $null }
         throw
     }
     if (-not $meta.contentDownloadUri) { Write-Warn2 "testSteps for $TcrId had no contentDownloadUri."; return $null }
-
-    # Pre-signed URL: try WITHOUT the bearer header first.
     try {
         $raw = Invoke-WebRequest -Uri $meta.contentDownloadUri -Method Get -TimeoutSec $Timeout -UseBasicParsing
         return ($raw.Content | ConvertFrom-Json)
@@ -137,111 +114,181 @@ function Get-TestStepsJson {
         try {
             $raw = Invoke-WebRequest -Uri $meta.contentDownloadUri -Method Get -Headers $headers -TimeoutSec $Timeout -UseBasicParsing
             return ($raw.Content | ConvertFrom-Json)
-        } catch {
-            Write-Warn2 "Could not download step JSON for $TcrId : $($_.Exception.Message)"
-            return $null
-        }
+        } catch { Write-Warn2 "Could not download step JSON for $TcrId : $($_.Exception.Message)"; return $null }
     }
 }
 
 # --------------------------------------------------------------------------
-# HTML rendering (schema-agnostic recursive renderer)
+# Rendering helpers
 # --------------------------------------------------------------------------
 function ConvertTo-SafeHtml { param($v)
     if ($null -eq $v) { return "" }
     return ([string]$v).Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;')
 }
 
-function Get-StatusClass { param([string]$key,[string]$val)
-    $k = "$key".ToLower(); $t = "$val".ToLower()
-    if ($k -match 'status|result|state|outcome|passed') {
-        if ($t -match 'fail|error|abort|not.?ok|false') { return 'bad' }
-        if ($t -match 'pass|ok|success|true|done')       { return 'good' }
-    }
-    return ''
+function Format-Duration { param([string]$d)
+    if ([string]::IsNullOrEmpty($d)) { return "" }
+    try { $ts = [TimeSpan]::Parse($d) } catch { return $d }
+    if     ($ts.TotalSeconds -ge 60) { return ("{0}m {1:0}s" -f [int][math]::Floor($ts.TotalMinutes), $ts.Seconds) }
+    elseif ($ts.TotalSeconds -ge 1)  { return ("{0:0.0}s"    -f $ts.TotalSeconds) }
+    else                             { return ("{0:0}ms"     -f $ts.TotalMilliseconds) }
 }
 
-function Render-JsonNode { param($node,[string]$keyName = "")
+function Test-ContainsFailure { param($step)
+    if ("$($step.state)".ToLower() -eq 'failed') { return $true }
+    foreach ($c in @($step.innerSteps)) { if ($c -and (Test-ContainsFailure $c)) { return $true } }
+    return $false
+}
+
+function Add-LeafCount { param($step,$acc)
+    $kids = @($step.innerSteps)
+    if ($kids.Count -eq 0) {
+        switch ("$($step.state)".ToLower()) { 'ok' { $acc.ok++ } 'failed' { $acc.fail++ } default { $acc.other++ } }
+    } else { foreach ($c in $kids) { Add-LeafCount $c $acc } }
+}
+
+function Get-VerifyParts { param([string]$msg)
+    $expected = $null; $actual = $null; $headline = $null
+    if ($msg) {
+        $lines = $msg -split "`r?`n"
+        $headline = $lines[0].Trim()
+        foreach ($l in $lines) {
+            if     ($l -match 'Expected value\s*==\s*(.*)$') { $expected = $Matches[1].Trim().Trim('"') }
+            elseif ($l -match 'Actual value:\s*(.*)$')       { $actual   = $Matches[1].Trim().Trim('"') }
+        }
+    }
+    return [pscustomobject]@{ Headline=$headline; Expected=$expected; Actual=$actual }
+}
+
+function Test-IsSecret { param($step)
+    $probe = "$($step.name) $($step.value)"
+    return ($probe -match '(?i)pass(word|wd)?|secret|token|api[-_ ]?key|credential')
+}
+
+function Get-StepBody { param($step)
     $sb = New-Object System.Text.StringBuilder
-    if ($node -is [System.Collections.IEnumerable] -and -not ($node -is [string])) {
-        [void]$sb.Append('<ul>')
-        $i = 0
-        foreach ($item in $node) {
-            [void]$sb.Append("<li><span class='idx'>[$i]</span> " + (Render-JsonNode -node $item) + "</li>")
-            $i++
+    $mode = "$($step.actionMode)".ToLower()
+    if ($mode -eq 'verify' -and $step.message -match 'Expected value') {
+        $v = Get-VerifyParts $step.message
+        $vcls = if ("$($step.state)".ToLower() -eq 'failed') { 'fail' } else { 'ok' }
+        $exp = if ([string]::IsNullOrEmpty($v.Expected)) { "<em>(empty)</em>" } else { ConvertTo-SafeHtml $v.Expected }
+        $act = if ([string]::IsNullOrEmpty($v.Actual))   { "<em>(empty)</em>" } else { ConvertTo-SafeHtml $v.Actual }
+        [void]$sb.Append("<div class='verify $vcls'><div class='cmp'><span class='lbl'>Expected</span><code>$exp</code></div><div class='cmp'><span class='lbl'>Actual</span><code>$act</code></div></div>")
+    } else {
+        $secret = Test-IsSecret $step
+        $parts = @()
+        if ($step.value) {
+            $vv = if ($secret) { '&bull;&bull;&bull;&bull;&bull;' } else { ConvertTo-SafeHtml $step.value }
+            $parts += "<span class='kv'><span class='lbl'>Value</span><code>$vv</code></span>"
         }
-        [void]$sb.Append('</ul>')
-    }
-    elseif ($node -is [psobject] -and $node.PSObject.Properties.Name.Count -gt 0) {
-        [void]$sb.Append('<ul>')
-        foreach ($p in $node.PSObject.Properties) {
-            $cls = Get-StatusClass -key $p.Name -val $p.Value
-            $badge = if ($cls) { " <span class='badge $cls'>$(ConvertTo-SafeHtml $p.Value)</span>" } else { "" }
-            $isLeaf = -not ($p.Value -is [psobject]) -and -not ($p.Value -is [System.Collections.IEnumerable] -and -not ($p.Value -is [string]))
-            if ($isLeaf) {
-                if ($cls) {
-                    [void]$sb.Append("<li><span class='key'>$(ConvertTo-SafeHtml $p.Name)</span>:$badge</li>")
-                } else {
-                    [void]$sb.Append("<li><span class='key'>$(ConvertTo-SafeHtml $p.Name)</span>: <span class='val'>$(ConvertTo-SafeHtml $p.Value)</span></li>")
-                }
-            } else {
-                [void]$sb.Append("<li><details open><summary><span class='key'>$(ConvertTo-SafeHtml $p.Name)</span></summary>" + (Render-JsonNode -node $p.Value -keyName $p.Name) + "</details></li>")
-            }
+        if ($step.usedValue) {
+            $uv = if ($secret) { '&bull;&bull;&bull;&bull;&bull; <span class="masked">(masked)</span>' } else { ConvertTo-SafeHtml $step.usedValue }
+            $parts += "<span class='kv'><span class='lbl'>Used</span><code>$uv</code></span>"
         }
-        [void]$sb.Append('</ul>')
+        if ($parts.Count) { [void]$sb.Append("<div class='vals'>" + ($parts -join "") + "</div>") }
+        if ($step.message) { [void]$sb.Append("<div class='msg'>$(ConvertTo-SafeHtml $step.message)</div>") }
     }
-    else {
-        [void]$sb.Append("<span class='val'>$(ConvertTo-SafeHtml $node)</span>")
-    }
+    if ($step.details) { [void]$sb.Append("<div class='det'>$(ConvertTo-SafeHtml $step.details)</div>") }
     return $sb.ToString()
+}
+
+function Get-StepHtmlNode { param($step)
+    $state = "$($step.state)".ToLower()
+    $cls   = switch ($state) { 'ok' { 'ok' } 'failed' { 'fail' } default { 'skip' } }
+    $pill  = switch ($state) { 'ok' { 'OK' } 'failed' { 'FAIL' } default { $state.ToUpper() } }
+    $dur   = Format-Duration $step.duration
+    $name  = ConvertTo-SafeHtml $step.name
+    $mode  = if ($step.actionMode) { "<span class='mode m-$([string]$step.actionMode)'>$(ConvertTo-SafeHtml $step.actionMode)</span>" } else { "" }
+    $head  = "<span class='pill $cls'>$pill</span> <span class='nm'>$name</span> $mode <span class='dur'>$dur</span>"
+    $body  = Get-StepBody $step
+    $kids  = @($step.innerSteps)
+    if ($kids.Count -gt 0) {
+        $open  = if (Test-ContainsFailure $step) { ' open' } else { '' }
+        $inner = ($kids | ForEach-Object { Get-StepHtmlNode $_ }) -join ""
+        return "<details class='step $cls'$open><summary>$head</summary><div class='kids'>$body$inner</div></details>"
+    } else {
+        return "<div class='step leaf $cls'><div class='hd'>$head</div>$body</div>"
+    }
 }
 
 function New-StepHtml { param($TestCaseRun,$StepJson)
     $title = if ($TestCaseRun.displayName) { $TestCaseRun.displayName } else { $TestCaseRun.testCaseId }
-    $bodyInner = if ($StepJson) { Render-JsonNode -node $StepJson } else { "<p class='note'>No step-level attachment was available for this test case run.</p>" }
+    $st    = "$($TestCaseRun.state)".ToLower()
+    $hcls  = if ($st -eq 'failed') { 'fail' } elseif ($st -in @('succeeded','ok','passed')) { 'ok' } else { 'skip' }
+
+    $chips = ""; $meta = ""; $tree = "<p class='note'>No step-level attachment was available for this test case run.</p>"
+    if ($StepJson) {
+        $roots = @($StepJson)
+        $acc = [pscustomobject]@{ ok=0; fail=0; other=0 }
+        foreach ($r in $roots) { Add-LeafCount $r $acc }
+        $chips = "<span class='chip ok'>$($acc.ok) passed</span><span class='chip fail'>$($acc.fail) failed</span>"
+        if ($acc.other) { $chips += "<span class='chip skip'>$($acc.other) other</span>" }
+        if ($roots[0].startTime) { $meta += "Started " + (ConvertTo-SafeHtml $roots[0].startTime) }
+        $rootDur = Format-Duration $roots[0].duration
+        if ($rootDur) { $meta += " &nbsp;&middot;&nbsp; $rootDur" }
+        $treeSteps = if ($roots.Count -eq 1 -and @($roots[0].innerSteps).Count -gt 0) { @($roots[0].innerSteps) } else { $roots }
+        $tree = ($treeSteps | ForEach-Object { Get-StepHtmlNode $_ }) -join ""
+    }
+
     $css = @"
 <style>
- body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;padding:24px;color:#1b1f24;background:#fff;font-size:14px;line-height:1.5}
- h1{font-size:18px;margin:0 0 4px} .sub{color:#5b6570;margin:0 0 16px;font-size:12px}
- .hdr{border-left:4px solid #d1242f;background:#fff5f5;padding:12px 16px;border-radius:6px;margin-bottom:20px}
- ul{list-style:none;margin:4px 0;padding-left:18px;border-left:1px solid #e6e8eb}
- li{margin:2px 0} .key{color:#0550ae;font-weight:600} .val{color:#24292f;font-family:ui-monospace,Consolas,monospace}
- .idx{color:#8b949e;font-family:ui-monospace,Consolas,monospace}
- summary{cursor:pointer} details{margin:2px 0}
- .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600}
- .badge.bad{background:#ffebe9;color:#d1242f} .badge.good{background:#dafbe1;color:#1a7f37}
- .note{color:#5b6570;font-style:italic}
+ :root{--red:#d1242f;--red-bg:#fff5f5;--green:#1a7f37;--green-bg:#eafbf0;--ink:#1b1f24;--mut:#5b6570;--line:#e6e8eb;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+ *{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;padding:24px;color:var(--ink);background:#fafbfc;font-size:14px;line-height:1.5}
+ .card{max-width:1000px;margin:0 auto}
+ header{background:#fff;border:1px solid var(--line);border-left:5px solid var(--red);border-radius:8px;padding:16px 20px;margin-bottom:16px}
+ header.ok{border-left-color:var(--green)}
+ h1{font-size:20px;margin:0 0 8px;letter-spacing:-.2px}
+ .meta{color:var(--mut);font-size:12px;margin-bottom:10px}
+ .chip{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;margin-right:6px}
+ .chip.ok{background:var(--green-bg);color:var(--green)} .chip.fail{background:var(--red-bg);color:var(--red)} .chip.skip{background:#eef1f4;color:var(--mut)}
+ .step{background:#fff;border:1px solid var(--line);border-radius:6px;margin:6px 0}
+ details.step>summary{list-style:none;cursor:pointer;padding:8px 12px;display:flex;align-items:center;gap:8px;border-radius:6px}
+ details.step>summary::-webkit-details-marker{display:none}
+ details.step>summary::before{content:'\25B8';color:var(--mut);font-size:11px;transition:transform .1s} details.step[open]>summary::before{transform:rotate(90deg)}
+ .step.leaf .hd{padding:8px 12px;display:flex;align-items:center;gap:8px}
+ .step.fail{border-color:#ffc9c9} details.step.fail>summary,.step.leaf.fail .hd{background:var(--red-bg)}
+ .kids{padding:2px 10px 8px 24px;border-left:2px solid var(--line);margin-left:14px}
+ .pill{font-size:10px;font-weight:700;letter-spacing:.4px;padding:2px 7px;border-radius:4px;color:#fff;flex:none}
+ .pill.ok{background:var(--green)} .pill.fail{background:var(--red)} .pill.skip{background:#8b949e}
+ .nm{font-weight:600;flex:1;min-width:0}
+ .mode{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:1px 6px;flex:none}
+ .m-verify{color:#0550ae;border-color:#b6d4fe} .m-input{color:#6f42c1;border-color:#e2d4fb} .m-select{color:#57606a}
+ .dur{color:var(--mut);font-size:12px;font-family:var(--mono);flex:none}
+ .verify{display:flex;gap:10px;margin:6px 0 2px;flex-wrap:wrap} .cmp{flex:1;min-width:220px;border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:#fff}
+ .verify.fail .cmp{border-color:#ffc9c9;background:var(--red-bg)} .verify.ok .cmp{background:#fff}
+ .lbl{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);margin-bottom:2px}
+ code{font-family:var(--mono);font-size:12.5px;word-break:break-word} .masked{color:var(--mut);font-style:italic;font-family:inherit}
+ .vals{display:flex;gap:16px;flex-wrap:wrap;margin:4px 0} .kv .lbl{display:inline;margin-right:6px}
+ .msg{color:var(--mut);font-family:var(--mono);font-size:12px;white-space:pre-wrap;margin:4px 0}
+ .det{color:var(--mut);font-size:12px;margin:4px 0} .note{color:var(--mut);font-style:italic}
 </style>
 "@
     return @"
-<!doctype html><html><head><meta charset="utf-8"><title>$([System.Web.HttpUtility]::HtmlEncode($title)) - Step detail</title>$css</head>
-<body>
- <div class="hdr">
-   <h1>$([System.Web.HttpUtility]::HtmlEncode($title))</h1>
-   <p class="sub">State: <b>$($TestCaseRun.state)</b> &nbsp;|&nbsp; Test case run: $($TestCaseRun.id) &nbsp;|&nbsp; Test case: $($TestCaseRun.testCaseId)</p>
- </div>
- $bodyInner
-</body></html>
+<!doctype html><html><head><meta charset="utf-8"><title>$(ConvertTo-SafeHtml $title) - Step detail</title>$css</head>
+<body><div class="card">
+ <header class="$hcls">
+   <h1>$(ConvertTo-SafeHtml $title)</h1>
+   <div class="meta">State <b>$($TestCaseRun.state)</b> &nbsp;&middot;&nbsp; $meta &nbsp;&middot;&nbsp; run $($TestCaseRun.id)</div>
+   <div>$chips</div>
+ </header>
+ $tree
+</div></body></html>
 "@
 }
 
 # --------------------------------------------------------------------------
-# Azure DevOps Test REST helpers (attach HTML to failed results)
+# Azure DevOps Test REST helpers
 # --------------------------------------------------------------------------
 function Get-AdoFailedResults {
     param([string]$Collection,[string]$Project,[string]$BuildId,[string]$AdoToken)
     $h = @{ 'Authorization'="Bearer $AdoToken"; 'Accept'='application/json' }
     $buildUri = [uri]::EscapeDataString("vstfs:///Build/Build/$BuildId")
-    $runsUrl  = "$Collection$Project/_apis/test/runs?buildUri=$buildUri&api-version=7.1"
-    $runs = Invoke-RestMethod -Uri $runsUrl -Method Get -Headers $h
+    $runs = Invoke-RestMethod -Uri "$Collection$Project/_apis/test/runs?buildUri=$buildUri&api-version=7.1" -Method Get -Headers $h
     if (-not $runs.value -or $runs.value.Count -eq 0) { Write-Warn2 "No ADO test runs found for build $BuildId."; return @() }
     $results = @()
     foreach ($r in $runs.value) {
-        $resUrl = "$Collection$Project/_apis/test/Runs/$($r.id)/results?outcomes=Failed&`$top=1000&api-version=7.1"
-        $res = Invoke-RestMethod -Uri $resUrl -Method Get -Headers $h
-        foreach ($item in $res.value) {
-            $results += [pscustomobject]@{ RunId=$r.id; ResultId=$item.id; Title=$item.testCaseTitle; AutoName=$item.automatedTestName }
-        }
+        $res = Invoke-RestMethod -Uri "$Collection$Project/_apis/test/Runs/$($r.id)/results?outcomes=Failed&`$top=1000&api-version=7.1" -Method Get -Headers $h
+        foreach ($item in $res.value) { $results += [pscustomobject]@{ RunId=$r.id; ResultId=$item.id; Title=$item.testCaseTitle } }
     }
     Write-Info "ADO reports $($results.Count) failed result(s) for this build."
     return $results
@@ -252,83 +299,75 @@ function Add-AdoAttachment {
     $h = @{ 'Authorization'="Bearer $AdoToken"; 'Content-Type'='application/json' }
     $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($FilePath))
     $body = @{ attachmentType='GeneralAttachment'; fileName=$FileName; comment='Tosca step-level detail'; stream=$b64 } | ConvertTo-Json
-    $url  = "$Collection$Project/_apis/test/Runs/$RunId/Results/$ResultId/attachments?api-version=7.1"
-    Invoke-RestMethod -Uri $url -Method Post -Headers $h -Body $body | Out-Null
+    Invoke-RestMethod -Uri "$Collection$Project/_apis/test/Runs/$RunId/Results/$ResultId/attachments?api-version=7.1" -Method Post -Headers $h -Body $body | Out-Null
+}
+
+function Escape-Md { param($s)
+    if ($null -eq $s) { return "" }
+    return ([string]$s).Replace('|','\|').Replace("`r"," ").Replace("`n"," ")
 }
 
 # ==========================================================================
 # MAIN  (best-effort: always exits 0)
 # ==========================================================================
 try {
-    Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
 
     if ([string]::IsNullOrEmpty($BearerToken)) {
         $BearerToken = Get-Token -TokenUrl $TokenUrl -ClientId $ClientId -ClientSecret $ClientSecret -Timeout $RequestTimeout
     }
-
     if ([string]::IsNullOrEmpty($PlaylistRunId)) {
         $PlaylistRunId = Resolve-PlaylistRunId -BaseUrl $BaseUrl -SpaceId $SpaceId -Token $BearerToken -PlaylistName $PlaylistName -Timeout $RequestTimeout
     }
 
     $failedRuns = Get-FailedTestCaseRuns -BaseUrl $BaseUrl -SpaceId $SpaceId -Token $BearerToken -RunId $PlaylistRunId -PerPage $ItemsPerPage -States $FailedStates -Timeout $RequestTimeout
+    if (-not $failedRuns -or $failedRuns.Count -eq 0) { Write-Info "No failed test case runs - nothing to enrich."; exit 0 }
 
-    if (-not $failedRuns -or $failedRuns.Count -eq 0) {
-        Write-Info "No failed test case runs - nothing to enrich."
-        exit 0
-    }
-
-    # displayName (lower) -> html path, for later matching to ADO results
-    $nameToHtml = @{}
-    $reportIndex = @()
+    $nameToHtml = @{}; $reportIndex = @()
     foreach ($tcr in $failedRuns) {
-        $safe   = ($tcr.displayName, $tcr.testCaseId -ne $null)[0]
-        $safe   = ($safe -replace '[^\w\-]+','_').Trim('_'); if (-not $safe) { $safe = $tcr.id }
-        $file   = Join-Path $OutputDir ("FAILED_{0}_{1}.html" -f $safe, $tcr.id)
-        $json   = Get-TestStepsJson -BaseUrl $BaseUrl -SpaceId $SpaceId -Token $BearerToken -TcrId $tcr.id -Timeout $RequestTimeout
+        $safe = if ($tcr.displayName) { $tcr.displayName } else { $tcr.testCaseId }
+        $safe = ($safe -replace '[^\w\-]+','_').Trim('_'); if (-not $safe) { $safe = $tcr.id }
+        $file = Join-Path $OutputDir ("FAILED_{0}_{1}.html" -f $safe, $tcr.id)
+        $json = Get-TestStepsJson -BaseUrl $BaseUrl -SpaceId $SpaceId -Token $BearerToken -TcrId $tcr.id -Timeout $RequestTimeout
         (New-StepHtml -TestCaseRun $tcr -StepJson $json) | Out-File -FilePath $file -Encoding UTF8
         Write-Info "Rendered $file"
         if ($tcr.displayName) { $nameToHtml[$tcr.displayName.ToLower()] = $file }
         $reportIndex += [pscustomobject]@{ Name=$tcr.displayName; State=$tcr.state; File=(Split-Path $file -Leaf) }
     }
 
-    # Markdown summary tab
-    $md = "# Tosca failed tests - step detail`n`nPlaylist run: ``$PlaylistRunId```n`n| Test case | State | Report |`n|---|---|---|`n"
-    function Escape-Md { param($s) if ($null -eq $s) { return "" } return ([string]$s).Replace('|','\|').Replace("`r"," ").Replace("`n"," ") }
-    foreach ($r in $reportIndex) { $md += "| $(Escape-Md $r.Name) | $(Escape-Md $r.State) | $(Escape-Md $r.File) |`n" }
+    # Markdown summary tab (emoji + counts, pipe-safe)
+    $md  = "# Tosca failed tests - step detail`n`n"
+    $md += "**Playlist run:** ``$PlaylistRunId``  `n"
+    $md += "**Failed test cases:** $($reportIndex.Count)`n`n"
+    $md += "|  | Test case | State | Report |`n|---|---|---|---|`n"
+    foreach ($r in $reportIndex) {
+        $emoji = if ("$($r.State)".ToLower() -eq 'failed') { [char]0x274C } else { [char]0x26A0 }
+        $md += "| $emoji | $(Escape-Md $r.Name) | $(Escape-Md $r.State) | $(Escape-Md $r.File) |`n"
+    }
     $mdPath = Join-Path $OutputDir "_summary.md"
     $md | Out-File -FilePath $mdPath -Encoding UTF8
     Write-Host "##vso[task.uploadsummary]$mdPath"
 
-    # Attach to failed ADO results
     if ($AttachToTestResults) {
         $collection = $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI
         $project    = $env:SYSTEM_TEAMPROJECT
         $buildId    = $env:BUILD_BUILDID
         $adoToken   = $env:SYSTEM_ACCESSTOKEN
         if ([string]::IsNullOrEmpty($adoToken)) {
-            Write-Warn2 "SYSTEM_ACCESSTOKEN not available - skipping per-result attachments. (Set env SYSTEM_ACCESSTOKEN: `$(System.AccessToken) and grant the build service Test-Manage permission.) Reports are still published as an artifact."
+            Write-Warn2 "SYSTEM_ACCESSTOKEN not available - skipping per-result attachments. Reports still published as an artifact."
         } else {
             $adoFailed = Get-AdoFailedResults -Collection $collection -Project $project -BuildId $buildId -AdoToken $adoToken
             $attached = 0
             foreach ($res in $adoFailed) {
                 $key = "$($res.Title)".ToLower()
                 if ($nameToHtml.ContainsKey($key)) {
-                    try {
-                        Add-AdoAttachment -Collection $collection -Project $project -AdoToken $adoToken -RunId $res.RunId -ResultId $res.ResultId -FilePath $nameToHtml[$key] -FileName "ToscaStepDetail.html"
-                        $attached++
-                    } catch { Write-Warn2 "Attach failed for '$($res.Title)': $($_.Exception.Message)" }
-                } else {
-                    Write-Warn2 "No rendered report matched ADO result title '$($res.Title)' (name-matching mismatch)."
-                }
+                    try { Add-AdoAttachment -Collection $collection -Project $project -AdoToken $adoToken -RunId $res.RunId -ResultId $res.ResultId -FilePath $nameToHtml[$key] -FileName "ToscaStepDetail.html"; $attached++ }
+                    catch { Write-Warn2 "Attach failed for '$($res.Title)': $($_.Exception.Message)" }
+                } else { Write-Warn2 "No rendered report matched ADO result title '$($res.Title)'." }
             }
             Write-Info "Attached $attached report(s) to failed test results."
         }
     }
-
     exit 0
 }
-catch {
-    Write-Err2 "Enrichment step failed (non-fatal): $($_.Exception.Message)"
-    exit 0   # never change the job's pass/fail outcome
-}
+catch { Write-Err2 "Enrichment step failed (non-fatal): $($_.Exception.Message)"; exit 0 }
