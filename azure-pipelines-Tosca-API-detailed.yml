@@ -1,10 +1,20 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+# ============================================================================
+# Tosca Cloud Playlist execution pipeline
+# ----------------------------------------------------------------------------
+# Triggers a Tosca Cloud playlist run, waits for it to finish, publishes the
+# results to the Tests tab, and attaches step-level HTML detail to any failures.
+# Docs: https://aka.ms/yaml
+# ============================================================================
+
+# This example leverages a Manual/other-trigger only: no CI trigger on commits or PRs.
+# Kick this off manually, from a schedule, or from another pipeline.
+# Change to a branch list (e.g. "- main") if you want it to run on push.
 
 trigger:
 - none
+
+# Single stage that holds the whole test workflow. Add more stages
+# (Deploy, etc.) later if this becomes part of a larger release.
 
 stages:
 
@@ -12,11 +22,30 @@ stages:
   displayName: Test
   jobs:
     - job: Test
+
+      # Runs on your self-hosted "Default" agent pool. This agent must be able
+      # to reach the Tosca tenant, the Okta token URL, Azure DevOps (for the
+      # attachment REST calls), and the blob host the step JSON is served from.
+
       pool:
         name: Default
       steps:
+
+      # -------------------------------------------------------------------
+      # Warm-up / sanity step. Confirms the agent and job are alive before
+      # the real work starts. Safe to remove; handy as a log marker.
+      # -------------------------------------------------------------------
       - script: echo Test
         displayName: 'Prepare Testing'
+
+      # -------------------------------------------------------------------
+      # Execute the Tosca Cloud playlist.
+      # Authenticates (client credentials), resolves the playlist by name, starts a run, polls until it finishes, and writes JUnit results.
+      #   -StartNewRun / -MonitorRun / -RetrieveResults drive the 4 phases.
+      #   -PollingInterval / -MaxPollingTimeout bound the wait (here: poll every 10s, give up after 2h).
+      # Connection values come from pipeline variables (ideally a variable group); ToscaClientSecret must be a SECRET variable.
+      # This task exits non-zero if the run doesn't succeed, which fails the job - the reason every later task uses condition: always().
+      # -------------------------------------------------------------------
 
       - task: PowerShell@2
         inputs:
@@ -36,6 +65,12 @@ stages:
             -JUnitResultsFile "C:\Tricentis\Tosca\Results\results.xml"
         displayName: 'Execute Tosca Cloud Playlist and Upload Results'
 
+      # -------------------------------------------------------------------
+      # Normalize the JUnit file encoding to UTF-8.
+      # The results file can come back with an encoding that PublishTestResults mis-parses; rewriting it as UTF-8 avoids garbled characters / import errors.
+      # condition: always() so it still runs when the run failed (that's exactly when you need the results published).
+      # -------------------------------------------------------------------
+
       - task: PowerShell@2
         displayName: 'Convert JUnit results to UTF-8'
         condition: always()
@@ -46,6 +81,12 @@ stages:
             $dest = "C:\Tricentis\Tosca\Results\results_utf8.xml"
             [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
 
+      # -------------------------------------------------------------------
+      # Publish results to the run's Tests tab.
+      # Reads the UTF-8 JUnit file so pass/fail, per-test drill-in, and run-over-run history show up in Azure DevOps.
+      # This also creates the test run/results that the next task attaches HTML to. always() so failures are still published.
+      # -------------------------------------------------------------------
+
       - task: PublishTestResults@2
         displayName: 'Publish Test Results'
         condition: always()
@@ -54,10 +95,13 @@ stages:
           testResultsFormat: 'JUnit'
 
       # -------------------------------------------------------------------
-      # NEW: enrich failed tests with step-level HTML and attach to results.
+      # Enrich failed tests with step-level HTML and attach to results.
+      # Re-derives the run id, pulls each failed test case's step JSON, renders one HTML report per failure, writes a Markdown summary tab,
+      # and attaches each report to the matching failed result in the Tests tab.
       # Runs on failure too (condition: always) - that's when it matters.
-      # SYSTEM_ACCESSTOKEN is required to attach files to test results.
+      # SYSTEM_ACCESSTOKEN is required to attach files to test results (the build service identity also needs Manage/Publish test results).
       # -------------------------------------------------------------------
+
       - task: PowerShell@2
         displayName: 'Attach step-level detail to failed tests'
         condition: always()
@@ -74,6 +118,12 @@ stages:
             -PlaylistName "Regression - Web To Lead - End to End"
             -OutputDir "$(Build.ArtifactStagingDirectory)\ToscaStepReports"
             -AttachToTestResults $true
+
+      # -------------------------------------------------------------------
+      # Publish the rendered reports as a downloadable pipeline artifact.
+      # This is the safety net: even if a per-result attachment can't match a name or the OAuth token is missing,
+      # every HTML report is still here under the "ToscaStepReports" artifact. always() so it runs on failure.
+      # -------------------------------------------------------------------
 
       - task: PublishPipelineArtifact@1
         displayName: 'Publish step-detail reports'
