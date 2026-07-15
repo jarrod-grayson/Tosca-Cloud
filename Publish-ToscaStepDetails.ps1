@@ -234,7 +234,7 @@ function New-StepHtml { param($TestCaseRun,$StepJson,$PortalBaseUrl,$SpaceName,$
 
     $resultLink = ""
     if ($PortalBaseUrl -and $SpaceName -and $PlaylistRunId) {
-        $resultUrl = "$PortalBaseUrl/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId/results/$($TestCaseRun.id)"
+        $resultUrl = "$PortalBaseUrl/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId/results/$($TestCaseRun.testCaseId)"
         $resultLink = " &nbsp;&middot;&nbsp; <a href='$resultUrl'>Open in Tosca Cloud &rarr;</a>"
     }
 
@@ -342,7 +342,7 @@ try {
         (New-StepHtml -TestCaseRun $tcr -StepJson $json -PortalBaseUrl $portal -SpaceName $SpaceName -PlaylistRunId $PlaylistRunId) | Out-File -FilePath $file -Encoding UTF8
         Write-Info "Rendered $file"
         if ($tcr.displayName) { $nameToHtml[$tcr.displayName.ToLower()] = $file }
-        $resultUrl = if ($SpaceName) { "$portal/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId/results/$($tcr.id)" } else { "" }
+        $resultUrl = if ($SpaceName) { "$portal/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId/results/$($tcr.testCaseId)" } else { "" }
         $reportIndex += [pscustomobject]@{ Name=$tcr.displayName; State=$tcr.state; File=(Split-Path $file -Leaf); Url=$resultUrl }
     }
 
