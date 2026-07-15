@@ -1,10 +1,17 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+# Tosca Cloud playlist execution pipeline (execution client only).
+# Reuses tosca_cloud_execution_client.ps1 from the repo.
 
 trigger:
 - none
+
+variables:
+  - name: toscaPlaylistName
+    value: Regression - Web To Lead - End to End
+  # Per-build results path. Agent.TempDirectory is wiped at the start of each job,
+  # so a failed run can't republish a previous build's results, and runs of this
+  # pipeline won't collide with the other pipeline on the same agent.
+  - name: toscaResultsFile
+    value: $(Agent.TempDirectory)\ToscaResults\results.xml
 
 stages:
 
@@ -12,6 +19,8 @@ stages:
   displayName: Test
   jobs:
     - job: Test
+      # Above the script's 2h MaxPollingTimeout so it can self-cancel first.
+      timeoutInMinutes: 135
       pool:
         name: Default
       steps:
@@ -19,36 +28,30 @@ stages:
         displayName: 'Prepare Testing'
 
       - task: PowerShell@2
+        displayName: 'Execute Tosca Cloud Playlist and Retrieve Results'
+        env:
+          TOSCA_CLIENT_SECRET: $(ToscaClientSecret)
         inputs:
           filePath: $(System.DefaultWorkingDirectory)\tosca_cloud_execution_client.ps1
           arguments: >
-            -BaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -BaseUrl "$(ToscaBaseUrl)"
             -ClientId "$(ToscaClientId)"
-            -ClientSecret "$(ToscaClientSecret)"
             -TokenUrl "$(ToscaAuthURL)"
-            -SpaceId "$(ToscaWorkspaceID)"
-            -PlaylistName "Regression - Web To Lead - End to End"
+            -WorkspaceId "$(ToscaWorkspaceID)"
+            -Scope "tta"
+            -PlaylistName "$(toscaPlaylistName)"
+            -ParameterOverride "Browser=Chrome"
             -StartNewRun
             -MonitorRun
             -PollingInterval 10
             -MaxPollingTimeout 7200
+            -CancelOnTimeout
             -RetrieveResults
-            -JUnitResultsFile "C:\Tricentis\Tosca\Results\results.xml"
-        displayName: 'Execute Tosca Cloud Playlist and Upload Results'
-
-      - task: PowerShell@2
-        displayName: 'Convert JUnit results to UTF-8'
-        condition: always()
-        inputs:
-          targetType: 'inline'
-          script: |
-            $source = "C:\Tricentis\Tosca\Results\results.xml"
-            $dest = "C:\Tricentis\Tosca\Results\results_utf8.xml"
-            [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
+            -JUnitResultsFile "$(toscaResultsFile)"
 
       - task: PublishTestResults@2
         displayName: 'Publish Test Results'
         condition: always()
         inputs:
-          testResultsFiles: 'C:\Tricentis\Tosca\Results\results_utf8.xml'
+          testResultsFiles: '$(toscaResultsFile)'
           testResultsFormat: 'JUnit'
