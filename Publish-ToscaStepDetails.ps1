@@ -213,7 +213,7 @@ function Get-StepHtmlNode { param($step)
     }
 }
 
-function New-StepHtml { param($TestCaseRun,$StepJson)
+function New-StepHtml { param($TestCaseRun,$StepJson,$PortalBaseUrl,$SpaceName,$PlaylistRunId)
     $title = if ($TestCaseRun.displayName) { $TestCaseRun.displayName } else { $TestCaseRun.testCaseId }
     $st    = "$($TestCaseRun.state)".ToLower()
     $hcls  = if ($st -eq 'failed') { 'fail' } elseif ($st -in @('succeeded','ok','passed')) { 'ok' } else { 'skip' }
@@ -230,6 +230,12 @@ function New-StepHtml { param($TestCaseRun,$StepJson)
         if ($rootDur) { $meta += " &nbsp;&middot;&nbsp; $rootDur" }
         $treeSteps = if ($roots.Count -eq 1 -and @($roots[0].innerSteps).Count -gt 0) { @($roots[0].innerSteps) } else { $roots }
         $tree = ($treeSteps | ForEach-Object { Get-StepHtmlNode $_ }) -join ""
+    }
+
+    $resultLink = ""
+    if ($PortalBaseUrl -and $SpaceName -and $PlaylistRunId) {
+        $resultUrl = "$PortalBaseUrl/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId/results/$($TestCaseRun.id)"
+        $resultLink = " &nbsp;&middot;&nbsp; <a href='$resultUrl'>Open in Tosca Cloud &rarr;</a>"
     }
 
     $css = @"
@@ -270,7 +276,7 @@ function New-StepHtml { param($TestCaseRun,$StepJson)
 <body><div class="card">
  <header class="$hcls">
    <h1>$(ConvertTo-SafeHtml $title)</h1>
-   <div class="meta">State <b>$($TestCaseRun.state)</b> &nbsp;&middot;&nbsp; $meta &nbsp;&middot;&nbsp; run $($TestCaseRun.id)</div>
+   <div class="meta">State <b>$($TestCaseRun.state)</b> &nbsp;&middot;&nbsp; $meta &nbsp;&middot;&nbsp; run $($TestCaseRun.id)$resultLink</div>
    <div>$chips</div>
  </header>
  $tree
@@ -325,21 +331,23 @@ try {
     $failedRuns = Get-FailedTestCaseRuns -BaseUrl $BaseUrl -SpaceId $SpaceId -Token $BearerToken -RunId $PlaylistRunId -PerPage $ItemsPerPage -States $FailedStates -Timeout $RequestTimeout
     if (-not $failedRuns -or $failedRuns.Count -eq 0) { Write-Info "No failed test case runs - nothing to enrich."; exit 0 }
 
+    $portal = if ($PortalBaseUrl) { $PortalBaseUrl } else { $BaseUrl }
+
     $nameToHtml = @{}; $reportIndex = @()
     foreach ($tcr in $failedRuns) {
         $safe = if ($tcr.displayName) { $tcr.displayName } else { $tcr.testCaseId }
         $safe = ($safe -replace '[^\w\-]+','_').Trim('_'); if (-not $safe) { $safe = $tcr.id }
         $file = Join-Path $OutputDir ("FAILED_{0}_{1}.html" -f $safe, $tcr.id)
         $json = Get-TestStepsJson -BaseUrl $BaseUrl -SpaceId $SpaceId -Token $BearerToken -TcrId $tcr.id -Timeout $RequestTimeout
-        (New-StepHtml -TestCaseRun $tcr -StepJson $json) | Out-File -FilePath $file -Encoding UTF8
+        (New-StepHtml -TestCaseRun $tcr -StepJson $json -PortalBaseUrl $portal -SpaceName $SpaceName -PlaylistRunId $PlaylistRunId) | Out-File -FilePath $file -Encoding UTF8
         Write-Info "Rendered $file"
         if ($tcr.displayName) { $nameToHtml[$tcr.displayName.ToLower()] = $file }
-        $reportIndex += [pscustomobject]@{ Name=$tcr.displayName; State=$tcr.state; File=(Split-Path $file -Leaf) }
+        $resultUrl = if ($SpaceName) { "$portal/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId/results/$($tcr.id)" } else { "" }
+        $reportIndex += [pscustomobject]@{ Name=$tcr.displayName; State=$tcr.state; File=(Split-Path $file -Leaf); Url=$resultUrl }
     }
 
     # Markdown summary tab (emoji + counts, pipe-safe)
     $md  = "# Tosca failed tests - step detail`n`n"
-    $portal = if ($PortalBaseUrl) { $PortalBaseUrl } else { $BaseUrl }
     if ($SpaceName) {
         $runUrl = "$portal/_portal/space/$([uri]::EscapeDataString($SpaceName))/runs/$PlaylistRunId"
         $md += "**[Open run in Tosca Cloud]($runUrl)**`n`n"
@@ -349,7 +357,8 @@ try {
     $md += "|  | Test case | State | Report |`n|---|---|---|---|`n"
     foreach ($r in $reportIndex) {
         $emoji = if ("$($r.State)".ToLower() -eq 'failed') { [char]0x274C } else { [char]0x26A0 }
-        $md += "| $emoji | $(Escape-Md $r.Name) | $(Escape-Md $r.State) | $(Escape-Md $r.File) |`n"
+        $nameCell = if ($r.Url) { "[$(Escape-Md $r.Name)]($($r.Url))" } else { Escape-Md $r.Name }
+        $md += "| $emoji | $nameCell | $(Escape-Md $r.State) | $(Escape-Md $r.File) |`n"
     }
     $mdPath = Join-Path $OutputDir "_summary.md"
     $md | Out-File -FilePath $mdPath -Encoding UTF8
