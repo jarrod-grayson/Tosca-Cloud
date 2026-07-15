@@ -6,7 +6,7 @@ trigger:
 
 variables:
   - name: toscaPlaylistName
-    value: Regression - Web To Lead - End to End
+    value: Smoke
   # Per-build results path. Agent.TempDirectory is wiped at the start of each job,
   # so a failed run can't republish a previous build's results, and runs of this
   # pipeline won't collide with the other pipeline on the same agent.
