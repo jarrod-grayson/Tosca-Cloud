@@ -13,6 +13,31 @@
 trigger:
 - none
 
+# ----------------------------------------------------------------------------
+# Connection values come from the pipeline UI (or a variable group) and are
+# referenced directly below. Expected variables:
+#   ToscaBaseUrl        - full API base URL, e.g. https://amspresales.my.tricentis.com
+#   ToscaAuthURL        - full OAuth token endpoint (Okta)
+#   ToscaClientId       - OAuth client id
+#   ToscaClientSecret   - OAuth client secret  (MUST be a SECRET variable)
+#   ToscaWorkspaceID    - workspace/space GUID (used in API paths)
+#   ToscaWorkspaceName  - workspace/space display name (used in portal deep-links)
+# If they live in a variable group, add it here (the list form below is
+# required once a "- group:" entry is present):
+#   - group: <your-variable-group-name>
+#
+# The values below are pipeline-specific (not connection config), so they live
+# in the YAML rather than the UI.
+# ----------------------------------------------------------------------------
+variables:
+  - name: toscaPlaylistName
+    value: Regression - Web To Lead - End to End
+  # Per-build results path. Agent.TempDirectory is wiped at the start of each
+  # job, so a failed run can't republish a previous build's results.xml and
+  # concurrent builds on this agent won't collide. Expanded at job runtime.
+  - name: toscaResultsFile
+    value: $(Agent.TempDirectory)\ToscaResults\results.xml
+
 # Single stage that holds the whole test workflow. Add more stages
 # (Deploy, etc.) later if this becomes part of a larger release.
 
@@ -22,6 +47,12 @@ stages:
   displayName: Test
   jobs:
     - job: Test
+
+      # Bound the whole job just above the script's own 2h MaxPollingTimeout so
+      # the script's timeout+cancel logic fires first, instead of ADO killing
+      # the job mid-poll and leaving an orphaned server-side run. Self-hosted
+      # jobs otherwise have no time limit.
+      timeoutInMinutes: 135
 
       # Runs on your self-hosted "Default" agent pool. This agent must be able
       # to reach the Tosca tenant, the Okta token URL, Azure DevOps (for the
@@ -41,57 +72,48 @@ stages:
       # -------------------------------------------------------------------
       # Execute the Tosca Cloud playlist.
       # Authenticates (client credentials), resolves the playlist by name, starts a run, polls until it finishes, and writes JUnit results.
-      #   -StartNewRun / -MonitorRun / -RetrieveResults drive the 4 phases.
+      #   -StartNewRun / -MonitorRun / -RetrieveResults drive the phases.
       #   -PollingInterval / -MaxPollingTimeout bound the wait (here: poll every 10s, give up after 2h).
-      # Connection values come from pipeline variables (ideally a variable group); ToscaClientSecret must be a SECRET variable.
+      #   -CancelOnTimeout cancels the server-side run if monitoring times out.
+      # The client secret is passed via env (TOSCA_CLIENT_SECRET), not on the
+      # command line; the script reads it as the default for -ClientSecret.
       # This task exits non-zero if the run doesn't succeed, which fails the job - the reason every later task uses condition: always().
       # -------------------------------------------------------------------
 
       - task: PowerShell@2
+        displayName: 'Execute Tosca Cloud Playlist and Retrieve Results'
+        env:
+          TOSCA_CLIENT_SECRET: $(ToscaClientSecret)
         inputs:
           filePath: $(System.DefaultWorkingDirectory)\tosca_cloud_execution_client.ps1
           arguments: >
-            -BaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -BaseUrl "$(ToscaBaseUrl)"
             -ClientId "$(ToscaClientId)"
-            -ClientSecret "$(ToscaClientSecret)"
             -TokenUrl "$(ToscaAuthURL)"
-            -SpaceId "$(ToscaWorkspaceID)"
-            -PlaylistName "Regression - Web To Lead - End to End"
+            -WorkspaceId "$(ToscaWorkspaceID)"
+            -Scope "tta"
+            -PlaylistName "$(toscaPlaylistName)"
             -StartNewRun
             -MonitorRun
             -PollingInterval 10
             -MaxPollingTimeout 7200
+            -CancelOnTimeout
             -RetrieveResults
-            -JUnitResultsFile "C:\Tricentis\Tosca\Results\results.xml"
-        displayName: 'Execute Tosca Cloud Playlist and Upload Results'
-
-      # -------------------------------------------------------------------
-      # Normalize the JUnit file encoding to UTF-8.
-      # The results file can come back with an encoding that PublishTestResults mis-parses; rewriting it as UTF-8 avoids garbled characters / import errors.
-      # condition: always() so it still runs when the run failed (that's exactly when you need the results published).
-      # -------------------------------------------------------------------
-
-      - task: PowerShell@2
-        displayName: 'Convert JUnit results to UTF-8'
-        condition: always()
-        inputs:
-          targetType: 'inline'
-          script: |
-            $source = "C:\Tricentis\Tosca\Results\results.xml"
-            $dest = "C:\Tricentis\Tosca\Results\results_utf8.xml"
-            [IO.File]::WriteAllText($dest, (Get-Content -Raw $source), [Text.Encoding]::UTF8)
+            -JUnitResultsFile "$(toscaResultsFile)"
 
       # -------------------------------------------------------------------
       # Publish results to the run's Tests tab.
-      # Reads the UTF-8 JUnit file so pass/fail, per-test drill-in, and run-over-run history show up in Azure DevOps.
-      # This also creates the test run/results that the next task attaches HTML to. always() so failures are still published.
+      # Points directly at the file the execution script wrote. The script
+      # already re-serializes JUnit to consistent UTF-8 via XmlWriter, so the
+      # old separate "Convert JUnit results to UTF-8" step is no longer needed.
+      # always() so failures are still published (that's when you need them).
       # -------------------------------------------------------------------
 
       - task: PublishTestResults@2
         displayName: 'Publish Test Results'
         condition: always()
         inputs:
-          testResultsFiles: 'C:\Tricentis\Tosca\Results\results_utf8.xml'
+          testResultsFiles: '$(toscaResultsFile)'
           testResultsFormat: 'JUnit'
 
       # -------------------------------------------------------------------
@@ -100,6 +122,7 @@ stages:
       # and attaches each report to the matching failed result in the Tests tab.
       # Runs on failure too (condition: always) - that's when it matters.
       # SYSTEM_ACCESSTOKEN is required to attach files to test results (the build service identity also needs Manage/Publish test results).
+      # Client secret comes from env, same as the execution task.
       # -------------------------------------------------------------------
 
       - task: PowerShell@2
@@ -107,18 +130,18 @@ stages:
         condition: always()
         env:
           SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+          TOSCA_CLIENT_SECRET: $(ToscaClientSecret)
         inputs:
           filePath: $(System.DefaultWorkingDirectory)\Publish-ToscaStepDetails.ps1
           arguments: >
-            -BaseUrl "https://$(ToscaTenant).my.tricentis.com"
+            -BaseUrl "$(ToscaBaseUrl)"
             -ClientId "$(ToscaClientId)"
-            -ClientSecret "$(ToscaClientSecret)"
             -TokenUrl "$(ToscaAuthURL)"
-            -SpaceId "$(ToscaWorkspaceID)"
-            -PlaylistName "Regression - Web To Lead - End to End"
+            -WorkspaceId "$(ToscaWorkspaceID)"
+            -Scope "tta"
+            -PlaylistName "$(toscaPlaylistName)"
             -OutputDir "$(Build.ArtifactStagingDirectory)\ToscaStepReports"
-            -PortalBaseUrl "https://$(ToscaTenant).my.tricentis.com"
-            -SpaceName "$(ToscaSpaceName)"
+            -WorkspaceName "$(ToscaWorkspaceName)"
             -AttachToTestResults $true
 
       # -------------------------------------------------------------------
