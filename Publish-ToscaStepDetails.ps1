@@ -1,6 +1,6 @@
 #Requires -Version 3.0
 <#
-    Publish-ToscaStepDetails.ps1  (v3 - schema-aware renderer + screenshots)
+    Publish-ToscaStepDetails.ps1  (v4 - public Playlists API v2 only)
     ----------------------------------------------------------------------------
     Runs AFTER your existing execution-client + PublishTestResults@2 steps.
     Does NOT depend on internals of tosca_cloud_execution_client.ps1.
@@ -25,6 +25,15 @@
         attached to the matching failed result in the Azure DevOps Tests tab.
       * NOTE: screenshots are raw pixels - masking does not apply to them. Only
         enable for runs using synthetic/demo data.
+
+    v4 changes vs v3:
+      * Screenshots are listed via the PUBLIC, documented endpoint
+          GET /{spaceId}/_playlists/api/v2/testCaseRuns/{id}/attachments
+        keyed on the test case run id. The private _e2g endpoint, and the
+        executionId / unitId lookups it needed, are gone. The .jpg filter now
+        accepts fileExtension with or without a leading dot; caps, download
+        and best-effort handling are unchanged.
+      * Every Tosca call now goes through the public Playlists API v2.
 
     Best-effort: always exits 0 so it can never flip your job's pass/fail.
 #>
@@ -103,15 +112,6 @@ function Resolve-PlaylistRunId {
     return $match.id
 }
 
-function Get-ExecutionId {
-    # PUBLIC: GET /playlistRuns/{id} carries executionId on PlaylistRunV1.
-    param([string]$BaseUrl,[string]$WorkspaceId,[string]$Token,[string]$RunId,[int]$Timeout)
-    $url = "$BaseUrl/$WorkspaceId/_playlists/api/v2/playlistRuns/$RunId"
-    $headers = @{ 'Accept'='application/json'; 'Authorization'="Bearer $Token" }
-    try { $r = Invoke-Api -Uri $url -Headers $headers -Timeout $Timeout; return $r.executionId }
-    catch { Write-Warn2 "Could not fetch executionId for run $RunId : $($_.Exception.Message)"; return $null }
-}
-
 function Get-FailedTestCaseRuns {
     param([string]$BaseUrl,[string]$WorkspaceId,[string]$Token,[string]$RunId,[int]$PerPage,[string[]]$States,[int]$Timeout)
     $headers = @{ 'Accept'='application/json'; 'Authorization'="Bearer $Token" }
@@ -153,7 +153,7 @@ function Get-TestStepsJson {
 }
 
 # --------------------------------------------------------------------------
-# Screenshots (PRIVATE endpoint - best-effort, toggle with -IncludeScreenshots)
+# Screenshots (public attachments endpoint - best-effort, toggle with -IncludeScreenshots)
 # --------------------------------------------------------------------------
 function Save-BlobToFile {
     # SAS URLs are pre-signed: try WITHOUT the bearer first, then with as a fallback.
@@ -166,23 +166,25 @@ function Save-BlobToFile {
 }
 
 function Get-Screenshots {
-    # Lists unit attachments via the private _e2g API and downloads only .jpg/.jpeg.
-    param([string]$BaseUrl,[string]$WorkspaceId,[string]$Token,[string]$ExecutionId,[string]$UnitId,
+    # Lists test case run attachments via the public GET /testCaseRuns/{id}/attachments
+    # (UnitAttachmentV1[]) and downloads only .jpg/.jpeg.
+    param([string]$BaseUrl,[string]$WorkspaceId,[string]$Token,[string]$TcrId,
           [string]$OutputDir,[string]$KeyPrefix,[int]$Timeout,[int]$MaxCount,[long]$MaxBytes)
     $result = @()
-    if ([string]::IsNullOrEmpty($ExecutionId) -or [string]::IsNullOrEmpty($UnitId)) { return ,$result }
-    $url = "$BaseUrl/$WorkspaceId/_e2g/api/executions/$ExecutionId/units/$UnitId/attachments"
+    if ([string]::IsNullOrEmpty($TcrId)) { return ,$result }
+    $url = "$BaseUrl/$WorkspaceId/_playlists/api/v2/testCaseRuns/$TcrId/attachments"
     $headers = @{ 'Accept'='application/json'; 'Authorization'="Bearer $Token" }
     try { $atts = Invoke-Api -Uri $url -Headers $headers -Timeout $Timeout }
-    catch { Write-Warn2 "Attachment list failed for unit $UnitId : $($_.Exception.Message)"; return ,$result }
+    catch { Write-Warn2 "Attachment list failed for $TcrId : $($_.Exception.Message)"; return ,$result }
 
-    $jpgs = @($atts | Where-Object { $_.fileExtension -and (@('jpg','jpeg') -contains $_.fileExtension.ToLower()) -and $_.contentDownloadUri })
+    # TrimStart('.') so both "jpg" and ".jpg" match - the public spec doesn't pin the format.
+    $jpgs = @($atts | Where-Object { $_.fileExtension -and (@('jpg','jpeg') -contains $_.fileExtension.TrimStart('.').ToLower()) -and $_.contentDownloadUri })
     if ($jpgs.Count -eq 0) { return ,$result }
 
     $auth = @{ 'Authorization'="Bearer $Token" }
     $i = 0
     foreach ($j in $jpgs) {
-        if ($i -ge $MaxCount) { Write-Warn2 "Screenshot cap ($MaxCount) reached for unit $UnitId; skipping the rest."; break }
+        if ($i -ge $MaxCount) { Write-Warn2 "Screenshot cap ($MaxCount) reached for $TcrId; skipping the rest."; break }
         if ($j.contentLength -and $MaxBytes -gt 0 -and [int64]$j.contentLength -gt $MaxBytes) {
             Write-Warn2 "Skipping oversized screenshot '$($j.name)' ($($j.contentLength) bytes)."; continue
         }
@@ -423,14 +425,6 @@ try {
     $failedRuns = Get-FailedTestCaseRuns -BaseUrl $BaseUrl -WorkspaceId $WorkspaceId -Token $BearerToken -RunId $PlaylistRunId -PerPage $ItemsPerPage -States $FailedStates -Timeout $RequestTimeout
     if (-not $failedRuns -or $failedRuns.Count -eq 0) { Write-Info "No failed test case runs - nothing to enrich."; exit 0 }
 
-    # Resolve executionId once (public endpoint) - only needed for screenshots.
-    $executionId = $null
-    if ($IncludeScreenshots) {
-        $executionId = Get-ExecutionId -BaseUrl $BaseUrl -WorkspaceId $WorkspaceId -Token $BearerToken -RunId $PlaylistRunId -Timeout $RequestTimeout
-        if ($executionId) { Write-Info "Execution id: $executionId (screenshots enabled)" }
-        else { Write-Warn2 "No executionId resolved; screenshots will be skipped." }
-    }
-
     $nameToHtml = @{}; $nameToShots = @{}; $reportIndex = @()
     foreach ($tcr in $failedRuns) {
         $safe = if ($tcr.displayName) { $tcr.displayName } else { $tcr.testCaseId }
@@ -438,10 +432,10 @@ try {
         $file = Join-Path $OutputDir ("FAILED_{0}_{1}.html" -f $safe, $tcr.id)
         $json = Get-TestStepsJson -BaseUrl $BaseUrl -WorkspaceId $WorkspaceId -Token $BearerToken -TcrId $tcr.id -Timeout $RequestTimeout
 
-        # Screenshots (private endpoint, best-effort) - fetched before render so they can be embedded.
+        # Screenshots (public attachments endpoint, best-effort) - fetched before render so they can be embedded.
         $shots = @()
-        if ($IncludeScreenshots -and $executionId -and $tcr.unitId) {
-            $shots = @(Get-Screenshots -BaseUrl $BaseUrl -WorkspaceId $WorkspaceId -Token $BearerToken -ExecutionId $executionId -UnitId $tcr.unitId `
+        if ($IncludeScreenshots) {
+            $shots = @(Get-Screenshots -BaseUrl $BaseUrl -WorkspaceId $WorkspaceId -Token $BearerToken -TcrId $tcr.id `
                         -OutputDir $OutputDir -KeyPrefix $tcr.id -Timeout $RequestTimeout -MaxCount $MaxScreenshotsPerTest -MaxBytes $MaxScreenshotBytes)
             if ($shots.Count -gt 0) { Write-Info "  $($shots.Count) screenshot(s) for '$($tcr.displayName)'." }
         }
