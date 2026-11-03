@@ -31,7 +31,7 @@ jobs:
           -ClientSecret "$env:TOSCA_CLIENT_SECRET"
           -TokenUrl "$env:TOSCA_AUTH_URL"
           -WorkspaceId "$env:TOSCA_WORKSPACE_ID"
-          -PlaylistName "Smoke"
+          -PlaylistName "Regression - Web To Lead - End to End"
           -StartNewRun
           -MonitorRun
           -RetrieveResults
