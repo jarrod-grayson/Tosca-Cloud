@@ -44,6 +44,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path test-results | Out-Null
           Copy-Item "C:\Tricentis\Tosca\Results\results.xml" "test-results/results.xml" -ErrorAction SilentlyContinue
 
+      - name: Publish test summary
+        if: always()
+        shell: pwsh
+        run: ./Write-TestSummary.ps1 -ResultsFile test-results/results.xml
+
       - name: Upload JUnit Results Artifact
         if: always()
         uses: actions/upload-artifact@v7
